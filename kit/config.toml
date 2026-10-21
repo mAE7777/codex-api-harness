@@ -1,0 +1,68 @@
+model = "gpt-5.6-terra"
+model_provider = "quota_gateway"
+model_reasoning_effort = "medium"
+model_catalog_json = "/etc/codex-api/models.json"
+service_tier = "default"
+web_search = "disabled"
+approval_policy = "never"
+approvals_reviewer = "user"
+default_permissions = "codex_api_workspace"
+cli_auth_credentials_store = "ephemeral"
+suppress_unstable_features_warning = true
+
+[model_providers.quota_gateway]
+name = "API Codex — local quota gateway"
+base_url = "http://host.docker.internal:49187/v1"
+wire_api = "responses"
+env_key = "CODEX_GATEWAY_TOKEN"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0
+
+[model_providers.quota_gateway.capabilities]
+remote_compaction = "unsupported"
+
+[agents]
+enabled = false
+
+[features]
+multi_agent = false
+multi_agent_v2 = false
+apps = false
+plugins = false
+remote_plugin = false
+hooks = true
+plugin_hooks = false
+memories = false
+external_agent_memory_import = false
+external_migration = false
+image_generation = false
+realtime_conversation = false
+in_app_voice = false
+in_app_dictation = false
+browser_use = false
+browser_use_external = false
+computer_use = false
+remote_control = false
+standalone_web_search = false
+remote_models = false
+api_key_model_discovery = false
+responses_websockets = false
+responses_websockets_v2 = false
+remote_compaction_v2 = false
+enable_request_compression = false
+fast_mode = false
+ultrafast_mode = false
+skill_mcp_dependency_install = false
+skip_host_skill_discovery = true
+code_mode = true
+code_mode_host = true
+code_mode_only = true
+js_repl = false
+
+[analytics]
+enabled = false
+
+[projects.__WORKSPACE_TOML__]
+trust_level = "trusted"

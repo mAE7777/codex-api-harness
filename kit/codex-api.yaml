@@ -1,0 +1,23 @@
+# syntax=docker/sandbox-kit:3
+schemaVersion: "3"
+displayName: Codex API — isolated workspace
+description: Local Codex CLI with no upstream credentials, host integrations, or direct provider egress.
+kind: workload
+dockerfile: ./codex-api.dockerfile
+provides: ["codex@0.162.1", "playwright-cli@0.1.22"]
+capabilities:
+  - type: com.docker.sandbox/sbx@1
+  - type: com.docker.sandbox/network-policy@2
+    config:
+      runtime:
+        allow:
+          - localhost:49187
+          - hosts: [registry.npmjs.org:443]
+            methods: [GET, HEAD]
+            paths: ["/**"]
+          - hosts: [pypi.org:443]
+            methods: [GET, HEAD]
+            paths: ["/**"]
+          - hosts: [files.pythonhosted.org:443]
+            methods: [GET, HEAD]
+            paths: ["/**"]

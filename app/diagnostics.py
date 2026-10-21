@@ -1,0 +1,45 @@
+"""Credential-free explanations for local policy and API failures."""
+EXPLANATIONS = {
+ 'free_eligibility_unconfirmed': ('Free-only mode cannot establish that counting and local-tool inference are complimentary for this account.', 'Keep requests blocked if zero charges are required. Explicitly choose API charges only if intended; token protection remains enabled.'),
+ 'daily_token_limit': ('The local daily pool cannot cover the full input and output reservation.', 'Select a model in the other group, or wait for 00:00 UTC. Existing usage is preserved.'),
+ 'quota_reconciliation_required': ('The ledger needs investigation before more model requests are safe.', 'Run codex-api doctor and codex-api reconcile. Do not delete the ledger or witness.'),
+ 'quota_history_unknown': ('Earlier usage cannot yet be assigned safely.', 'Run codex-api reconcile and review the unconfirmed requests.'),
+ 'quota_settings_changed': ('The configured limit and recorded budget disagree.', 'Run codex-api doctor. Changing a limit must preserve recorded usage and reservations.'),
+ 'quota_state_unavailable': ('The local quota state could not be verified.', 'Run codex-api doctor. Do not reset or recreate the usage database.'),
+ 'quota_day_changed': ('The UTC date changed between counting and dispatch.', 'Send the request again. A request that was not dispatched does not consume a reservation.'),
+ 'usage_above_reservation': ('Actual usage exceeded the reserved maximum.', 'Review the count discrepancy and record confirmed usage with codex-api reconcile. The safety stop remains until investigated.'),
+ 'input_count_unavailable': ('Exact input token counting failed.', 'No model inference was sent. Check codex-api doctor and retry manually after the cause is resolved.'),
+ 'client_cancelled': ('The client cancelled the request.', 'Unsent requests release their reservation; possibly dispatched requests retain it until usage is confirmed.'),
+ 'api_timeout': ('An API phase exceeded its deadline.', 'No automatic retry is made. Run codex-api reconcile if the request may have reached the provider.'),
+ 'api_response_deadline': ('The total generation deadline was exceeded.', 'The connection is closed and unconfirmed usage retains its full reservation.'),
+ 'api_connection_failed': ('The API connection failed.', 'Check connectivity. No subscription fallback or automatic retry is used.'),
+ 'terminal_usage_missing': ('No complete terminal usage record was received.', 'The full reservation remains. Inspect codex-api reconcile before retrying uncertain work.'),
+ 'model_not_allowed': ('The model is outside the five-model allowlist.', 'Choose an allowed model with /model.'),
+ 'tool_disabled': ('The requested hosted or unreviewed tool is disabled.', 'Use an approved local tool. This command does not enable tools.'),
+ 'endpoint_disabled': ('This API endpoint is disabled.', 'Use the supported local Responses route. Media, storage, and hosted tools remain disabled.'),
+ 'service_tier_disabled': ('A paid or nonstandard service tier was requested.', 'Use the standard tier; Fast, Flex, and Ultrafast remain disabled.'),
+ 'input_type_disabled': ('This input type is disabled.', 'Use a supported input. Audio and external file/URL ingestion remain disabled.'),
+ 'provider_disabled': ('This provider is disabled.', 'Check the configured capability. No alternate provider is selected automatically.'),
+ 'gateway_stopped': ('The dedicated API gateway is stopping or stopped.', 'Run codex-api in the host terminal to enter the dedicated environment.'),
+ 'gateway_auth_failed': ('The guest and gateway credentials do not match.', 'Exit and restart the dedicated API environment. Do not log in with the subscription account.'),
+ 'gateway_state_unavailable': ('Local configuration, accounting, or connection state is unavailable.', 'Run codex-api doctor.'),
+ 'request_in_progress': ('Another model request already owns the single request slot.', 'Wait for it to finish or cancel it before retrying.'),
+ 'organization_usage_unknown': ('Traffic outside this gateway is not accounted for.', 'Review organization callers before enabling shared daily quota assumptions.'),
+ 'workspace_policy_failed': ('The workspace contains a forbidden path, link, or credential-like filename.', 'Use the startup message to locate the item and move credentials outside the shared workspace.'),
+ 'integrity_failed': ('An owned installation file differs from the verified manifest.', 'Restore or update through the dedicated installer; do not bypass the integrity check.'),
+ 'invalid_api_key': ('The API key is invalid, expired, or bound to the wrong account.', 'Update only the dedicated API key. Subscription login is not required.'),
+ 'credit_balance_exhausted': ('The provider reports exhausted balance or billing quota.', 'Review Billing. The local token ledger is not proof of free eligibility; no top-up is automatic.'),
+ 'insufficient_quota': ('The provider reports insufficient account quota.', 'Review Billing and Limits. Local daily token limits and account billing limits are separate.'),
+ 'project_spend_limit_exceeded': ('The project spending hard limit was reached.', 'Review project Limits. Do not raise it simply to bypass an unexplained charge.'),
+ 'organization_spend_limit_exceeded': ('The organization spending hard limit was reached.', 'Review organization Limits and usage across projects.'),
+ 'rate_limit_error': ('The provider request or token rate limit was reached.', 'Wait and retry manually. No automatic provider or model switch occurs.'),
+ 'rate_limit_exceeded': ('The provider request or token rate limit was reached.', 'Wait and retry manually.'),
+ 'context_length_exceeded': ('The conversation exceeds the model context limit.', 'Use /new, or /compact if quota remains.'),
+ 'unsupported_request': ('The CLI sent a field the adapter does not support.', 'Check the supported CLI version and run codex-api doctor; do not enable broad passthrough.'),
+ 'local_policy_rejected': ('The request did not satisfy the local policy.', 'Run codex-api doctor and inspect the specific error before retrying.'),
+}
+
+
+def explanation(code):
+    summary, action = EXPLANATIONS.get(code, ('This error code has no dedicated local explanation.', 'Run codex-api doctor and review the error code without sharing keys or prompts.'))
+    return {'code':code, 'summary':summary, 'next_step':action}
