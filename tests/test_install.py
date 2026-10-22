@@ -81,13 +81,13 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(self.root.exists())
 
     def test_changed_owned_file_stops_resuming_without_resetting_state(self):
-        self.install();before=(self.root/'state/usage.sqlite3').read_bytes();(self.root/'app/guard.py').write_text('CHANGED')
+        self.install();before=(self.root/'state/usage.sqlite3').read_bytes();(self.root/'app/guard.py').chmod(0o600);(self.root/'app/guard.py').write_text('CHANGED')
         with self.assertRaises(ValueError):self.install()
         self.assertEqual(before,(self.root/'state/usage.sqlite3').read_bytes())
 
     def test_other_release_does_not_silently_reuse_or_overwrite_existing_install(self):
         self.install();before=(self.root/'state/usage.sqlite3').read_bytes()
-        with patch.object(setup,'VERSION','0.2.0'):
+        with patch.object(setup,'VERSION','99.0.0'):
             with self.assertRaises(ValueError):self.install()
         self.assertEqual(before,(self.root/'state/usage.sqlite3').read_bytes())
 

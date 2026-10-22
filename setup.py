@@ -22,13 +22,19 @@ sys.path.insert(0, str(SOURCE/'app'))
 from guard import DAILY_LIMITS, Denied, Ledger, atomic_json
 from workspace_policy import check_workspace, managed_requirements
 
-VERSION = '0.1.0'
+VERSION = '0.2.0'
+INSTALL_LAYOUT_VERSION = 2
+UPDATER_ABI = 1
 SBX_VERSION = '0.49.1'
+CODEX_VERSION = '0.162.1'
+PLAYWRIGHT_VERSION = '0.1.22'
 SBX_URL = 'https://github.com/docker/sbx-releases/releases/download/v0.49.1/DockerSandboxes-darwin.tar.gz'
 SBX_SHA256 = 'e797bd6ed882cdfbd415318f44f2569d7238d14763fe2c445773099e2e613385'
 DEFAULT_HOME = Path.home()/'Library/Application Support/CodexAPIHarness'
 APP_FILES = ('settings.py','guard.py','gateway.py','controller.py','diagnostics.py',
-             'recovery.py','transport_control.py','workspace_policy.py','onboarding.py','provision.py')
+             'recovery.py','transport_control.py','workspace_policy.py','onboarding.py','provision.py',
+             'team_client.py','shared.py','extensions.py','maintenance.py','releases.py',
+             'session_state.py','team_ssh.py')
 KIT_FILES = ('codex-api.yaml','codex-api.dockerfile','config.toml','models.json',
              'entrypoint.sh','preferences.py','quota-client.py','quota-notice.py','web-tool.py','npmrc')
 
@@ -85,12 +91,12 @@ def validate_locations(root, workspace, launcher):
 
 
 def launcher_text(root):
-    code='import sys;sys.path.insert(0,'+repr(str(root/'app'))+');from controller import main;sys.exit(main())'
+    code='import sys;from pathlib import Path;sys.path.insert(0,str(Path('+repr(str(root/'app'))+').resolve(strict=True)));from controller import main;sys.exit(main())'
     prefix='exec '+shlex.quote(str(Path(sys.executable).resolve()))+' -I -c '+shlex.quote(code)
     return ('#!/bin/sh\n# codex-api-harness launcher; subscription Codex is never invoked.\n'
             'case "${1-}" in\n'
             "  '') set -- start ;;\n"
-            '  start|status|usage|doctor|explain|reconcile|stop|pause|login|prepare|reset|retire|configure|credentials|billing|help) ;;\n'
+            '  start|status|usage|doctor|explain|reconcile|stop|pause|login|prepare|reset|retire|configure|credentials|billing|team|extensions|protect|upgrade|help) ;;\n'
             '  -h|--help) set -- help ;;\n'
             '  *) set -- start "$@" ;;\n'
             'esac\n'+prefix+' "$@"\n')
@@ -127,6 +133,8 @@ def install(root,workspace,sbx=None,*,bootstrap=False,port=49188,launcher=None):
         manifest_path=root/'installation.json'
         if root.is_symlink() or not manifest_path.is_file():raise ValueError('The installation directory already exists without an owned manifest. It was left unchanged.')
         manifest=json.loads(manifest_path.read_text())
+        if (root/'upgrade-pending.json').exists():
+            raise ValueError('A code activation was interrupted. Run codex-api upgrade recover; no private state was overwritten.')
         settings=json.loads((root/'settings.json').read_text())
         if manifest.get('harness_version')!=VERSION:
             raise ValueError('The installed harness version differs. Use a reviewed state-preserving upgrade; nothing was overwritten.')
@@ -137,6 +145,9 @@ def install(root,workspace,sbx=None,*,bootstrap=False,port=49188,launcher=None):
         for relative,expected in manifest['files'].items():
             path=root/relative
             if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest()!=expected:raise ValueError('Existing installation integrity failed. No repair or quota reset was attempted.')
+        if manifest.get('layout_version')==INSTALL_LAYOUT_VERSION:
+            from releases import validate_layout
+            validate_layout(root)
         if launcher.is_symlink() or not launcher.is_file() or launcher.read_text()!=launcher_text(root):
             raise ValueError('The launcher differs or is missing. It was not overwritten.')
         return {'installed':True,'resumed':True,'root':str(root),'workspace':str(workspace),'provider_requests':0}
@@ -163,6 +174,9 @@ def install(root,workspace,sbx=None,*,bootstrap=False,port=49188,launcher=None):
             (stage/'kit'/name).write_text(data)
         (stage/'kit/workspace').write_text(str(workspace)+'\n')
         (stage/'kit/requirements.toml').write_text(managed_requirements(workspace))
+        atomic_json(stage/'protected-paths.json',[])
+        from extensions import render_build
+        render_build(stage)
         wrapper=launcher_text(root)
         (stage/'bin/codex-api').write_text(wrapper);(stage/'bin/codex-api').chmod(0o700)
         # Blank private key file. The setup agent asks the owner to fill it locally.
@@ -178,15 +192,17 @@ def install(root,workspace,sbx=None,*,bootstrap=False,port=49188,launcher=None):
         subscription=Path.home()/'.codex/config.toml'
         if subscription.is_symlink():raise ValueError('Subscription configuration is a symlink. Installation stopped without reading it.')
         baseline=hashlib.sha256(subscription.read_bytes()).hexdigest() if subscription.is_file() else None
+        from releases import initialize_layout
+        layout=initialize_layout(stage,root,source=SOURCE,version=VERSION)
         files={str(p.relative_to(stage)):hashlib.sha256(p.read_bytes()).hexdigest()
                for subdir in ('app','kit','bin') for p in (stage/subdir).rglob('*') if p.is_file()}
         files['settings.json']=hashlib.sha256((stage/'settings.json').read_bytes()).hexdigest()
         if sbx.is_relative_to(root):
             relative=str(sbx.relative_to(root));files[relative]=hashlib.sha256((stage/relative).read_bytes()).hexdigest()
         external_digest=hashlib.sha256(sbx.read_bytes()).hexdigest() if not sbx.is_relative_to(root) else None
-        atomic_json(stage/'installation.json',{'version':1,'harness_version':VERSION,'files':files,'external_sbx_sha256':external_digest,
+        atomic_json(stage/'installation.json',{'version':1,'harness_version':VERSION,'files':files,'external_sbx_sha256':external_digest,**layout,
                     'subscription_config_sha256':baseline,'workspace':str(workspace),'owned_sandbox_name':settings['sandbox_name'],
-                    'sbx_version':SBX_VERSION,'codex_version':'0.162.1','playwright_cli_version':'0.1.22'})
+                    'sbx_version':SBX_VERSION,'codex_version':CODEX_VERSION,'playwright_cli_version':PLAYWRIGHT_VERSION})
         if not workspace.exists():workspace.mkdir(mode=0o700,parents=True)
         stage.rename(root)
     launcher.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -197,7 +213,7 @@ def install(root,workspace,sbx=None,*,bootstrap=False,port=49188,launcher=None):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description='Install isolated API Codex. No provider requests or subscription changes.')
-    parser.add_argument('action',nargs='?',choices=['inspect','install'],default='install')
+    parser.add_argument('action',nargs='?',choices=['inspect','install','recover'],default='install')
     parser.add_argument('--json',action='store_true')
     parser.add_argument('--workspace',type=Path)
     parser.add_argument('--home',type=Path,default=DEFAULT_HOME)
@@ -205,9 +221,17 @@ def main(argv=None):
     parser.add_argument('--sbx',type=Path)
     parser.add_argument('--bootstrap-sbx',action='store_true')
     parser.add_argument('--port',type=int,default=49188)
+    parser.add_argument('--finish',action='store_true',help='Finish an interrupted reviewed activation instead of selecting old code; recover only.')
     args=parser.parse_args(argv)
     try:
         if args.action=='inspect':print(json.dumps(inspect_context(),indent=2));return 0
+        if args.finish and args.action!='recover':parser.error('--finish applies only to recover')
+        if args.action=='recover':
+            from releases import recover
+            result=recover(args.home.expanduser().resolve(),finish=args.finish)
+            print(json.dumps(result,indent=2))
+            print('Recovery preserved private state. Run codex-api prepare before the next session.')
+            return 0
         if platform.system()!='Darwin' or platform.machine()!='arm64' or sys.version_info<(3,11,8):
             raise ValueError('Supported: macOS on Apple Silicon, Python 3.11.8+. Nothing was installed.')
         if not args.workspace:

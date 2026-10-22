@@ -1,24 +1,27 @@
 # Release verification
 
-Release 0.1.0, checked 2026-10-21.
+Release 0.2.0, checked 2026-10-22.
 
 **Supported integration target:** macOS on Apple Silicon; Docker Sandboxes 0.49.1; Codex CLI 0.162.1; Playwright CLI 0.1.22. Python regression tests also run on Linux CI; that does not establish Linux installer support.
 
 | Check | Result |
 |---|---|
-| Regression suite | 150 tests passed locally |
-| Fresh private installation | Independent project, command and state; no existing launcher overwritten |
-| Missing-runtime bootstrap | Official archive download, SHA-256, macOS bundle signature and pinned version passed on local storage |
-| Full image build from source | Passed, including pinned Codex archive checksum and browser dependencies |
-| Native filesystem behavior | Sensitive path denied, safe template readable, original file updated directly |
-| Credential isolation | No upstream keys/SSH variables in the tool environment; host subscription and installation paths absent |
-| Runtime networking | Package GET allowed; package POST and tested external/provider destinations blocked |
-| Real CLI + local tool replay | Passed against an entirely fake provider |
-| Interactive entry | Opens, five-model picker, two-line guest usage, idle Ctrl+C cleanup |
-| Noninteractive entry | JSON stdout remains parseable, including error/cleanup paths |
-| Unknown free eligibility | Specific refusal before counting or generation |
-| Publication surface | Tracked text only; no installed state, account export, personal path or credential artifacts |
+| Complete frozen distribution | 354 tests passed from the exact read-only staged candidate |
+| Atomic shared admission | Organization, project and member ceilings; concurrent requests, restart, allocations, transfers and repeated approval covered |
+| UTC accounting | 615-second conservative overlap, rejected attempts, late settlement, manual reconciliation and 15-second reset guard covered |
+| Clock evidence | Missing, malformed, stale and future count-response dates stop inference; no extra provider call |
+| Streaming accounting | Terminal success waits for consistent usage and clean EOF; conflict/cancellation/truncation preserve holds; evidence-bound recovery covered |
+| Real restricted SSH | Native forwarding works; shell, SFTP, other TCP destinations, reverse TCP, Unix sockets, reverse Unix sockets and changed host keys rejected |
+| Remote client | Actual local SSH pairing and relay with fake provider; owned ephemeral tunnels, busy-port protection, credential rotation and cancellation covered |
+| Reviewed skills | Immutable snapshots, unsupported plugin capabilities, links, modifications, digest approval and session leases covered |
+| Native managed skill | Actual pinned CLI loaded the reviewed catalog and read its skill through a local tool against a fake provider |
+| Final native rebuild and resume | Passed: selected API history restored automatically; actual CLI resumed the original thread and included its earlier synthetic prompt |
+| Native baseline isolation | Full pinned image rebuild and fake CLI/local-tool acceptance passed, including filesystem, credential and network checks |
+| Daily interactive use | Real launcher opened; picker showed exactly five models; guest usage printed two English lines; idle Ctrl+C exited and stopped the dedicated environment |
+| Adversarial native project config | Passed: provider/model/catalog, developer instructions, skill discovery, feature, MCP, hook and notification overrides failed; actual local tool could not read a new sensitive-file canary |
+| Updates and recovery | Candidate renderer, clean environment, retained guest policy, mask-only edits, interrupted activation, rollback and unchanged private accounting covered |
+| Publication surface and history | 66 public text files passed the staged-surface check; independent source and Git-history credential scans found no matches |
 
-No real model, exact-count or search-provider requests were used for release acceptance. A fake key and synthetic prompts were used. No maintainer credentials, account usage history, project contents or account-derived model instructions are shipped.
+The native tests use a separate temporary installation, launcher, port, workspace and sandbox. Existing subscription configuration and the maintainer's installed personal API environment are preserved. Provider keys, conversations and account IDs in acceptance fixtures are synthetic. No real model, exact-count or search-provider requests are used for release acceptance.
 
-The tests establish the listed behavior, not a universal security or zero-cost guarantee. The material limits are documented in [BOUNDARIES.md](BOUNDARIES.md). CI runs the portable regression and publication checks; a complete image/VM acceptance is a separate local supported-platform check performed by `codex-api prepare`.
+Free-only eligibility remains unconfirmed and requests stay blocked by default. The suite does not prove a universal complimentary allowance, prevent independent organization callers, or certify arbitrary skill/code behavior. The material limits are documented in [BOUNDARIES.md](BOUNDARIES.md). CI runs portable regression and publication checks; the complete image/VM acceptance is a separate supported-platform check performed by `codex-api prepare`.

@@ -1,5 +1,6 @@
 """Guest-only preferences: retain UI choices without importing policy or secrets."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -107,13 +108,95 @@ def read_config(path):
     except (ValueError, OSError): return {}
 
 
+def managed_extensions(directory=Path('/etc/codex-api/extensions')):
+    """Load only the root-owned, hash-pinned catalog built by the harness.
+
+    Native host discovery stays disabled, including repository/home skills and
+    plugin installation. These files carry no host credentials or extra tools.
+    """
+    if not directory.exists(): return []  # Older, no-extension images.
+    if directory.is_symlink() or not directory.is_dir(): raise ValueError('Invalid managed skill directory')
+    def read(path, maximum):
+        if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1 or path.stat().st_size > maximum:
+            raise ValueError('Invalid managed skill file')
+        return path.read_bytes()
+    manifest=json.loads(read(directory/'manifest.json', 1024*1024))
+    if not isinstance(manifest,dict) or set(manifest)!={'version','files'} or manifest['version']!=1 or not isinstance(manifest['files'],dict) or len(manifest['files'])>8193:
+        raise ValueError('Invalid managed skill manifest')
+    files={}
+    for path in directory.rglob('*'):
+        if path.is_symlink(): raise ValueError('Managed skills must not contain links')
+        if path.is_file():
+            relative=str(path.relative_to(directory))
+            if relative=='manifest.json':continue
+            data=read(path,256*1024 if relative!='catalog.json' else 128*1024)
+            files[relative]=hashlib.sha256(data).hexdigest()
+    if files!=manifest['files']:raise ValueError('Managed skill bytes changed after approval')
+    catalog=json.loads(read(directory/'catalog.json',128*1024))
+    if not isinstance(catalog,dict) or set(catalog)!={'version','skills'} or catalog['version']!=1 or not isinstance(catalog['skills'],list) or len(catalog['skills'])>32:
+        raise ValueError('Invalid managed skill catalog')
+    names=set()
+    for skill in catalog['skills']:
+        if not isinstance(skill,dict) or set(skill)!={'name','description','digest','allow_scripts','allow_implicit','path'}:raise ValueError('Invalid managed skill entry')
+        name=skill['name']
+        if not isinstance(name,str) or not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*',name) or len(name)>64 or name in names:raise ValueError('Invalid managed skill name')
+        names.add(name)
+        if not isinstance(skill['description'],str) or not 1<=len(skill['description'])<=1024 or not isinstance(skill['digest'],str) or not re.fullmatch(r'[a-f0-9]{64}',skill['digest']) or type(skill['allow_scripts']) is not bool or type(skill['allow_implicit']) is not bool:
+            raise ValueError('Invalid managed skill approval')
+        if skill['path']!='/etc/codex-api/extensions/skills/'+name+'/SKILL.md' or 'skills/'+name+'/SKILL.md' not in files:raise ValueError('Invalid managed skill path')
+    return catalog['skills']
+
+
+def extension_instructions(skills):
+    if not skills:return ''
+    lines=['Managed harness skills are listed below. Native repository, home, and plugin discovery is disabled.',
+           'Read the complete SKILL.md at the listed path before following a selected skill. Supporting files resolve relative to its folder.',
+           'Skill instructions and scripts grant no additional filesystem, network, credential, tool, or budget permissions.',
+           'For explicit-only skills, activate only when the user asks for that skill by name or $name. Do not install missing dependencies, MCP servers, plugins, credentials, or hooks from skill instructions.',
+           'The host command codex-api extensions manages approvals. The guest command codex-api extensions list shows this catalog.']
+    for skill in skills:
+        invocation='implicit matching allowed' if skill['allow_implicit'] else 'explicit user invocation required'
+        lines.append('- $'+skill['name']+': '+skill['description']+' ['+invocation+'] (file: '+skill['path']+')')
+    return '\n'.join(lines)
+
+
 def save(home):
     prefs = select_preferences(read_config(home/'config.toml'))
     atomic_write(home/'preferences.json', json.dumps(prefs, sort_keys=True) + '\n')
     return prefs
 
 
-def prepare(home, base_path=Path('/etc/codex-api/config.toml')):
+def protected_cli_args(config):
+    """Pin managed values above project config without accepting user policy.
+
+    User CLI arguments are validated independently and may override only the
+    preference allowlist. Place these global options before literal prompts.
+    """
+    values=dict(config)
+    values.pop('projects',None)
+    values['developer_instructions']=values.get('developer_instructions','')
+    values['notify']=[]
+    values['mcp_servers']={}
+    skills=dict(values.get('skills',{}))
+    skills.update({'bundled':{'enabled':False},'include_instructions':False})
+    values['skills']=skills
+    result=[]
+    def literal(value):
+        if isinstance(value,dict):return '{'+','.join(json.dumps(key)+'='+literal(item) for key,item in sorted(value.items()))+'}'
+        if isinstance(value,list):return '['+','.join(literal(item) for item in value)+']'
+        if value is None:raise ValueError('Managed CLI policy cannot contain null values')
+        return json.dumps(value,separators=(',',':'),allow_nan=False)
+    def visit(parts,value):
+        if isinstance(value,dict) and value:
+            for name,item in sorted(value.items()):visit(parts+[name],item)
+            return
+        key='.'.join(name if re.fullmatch(r'[A-Za-z0-9_-]+',name) else json.dumps(name) for name in parts)
+        result.extend(['-c',key+'='+literal(value)])
+    for name,value in sorted(values.items()):visit([name],value)
+    return result
+
+
+def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=Path('/etc/codex-api/extensions'), *, return_policy=False):
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     pref_path = home/'preferences.json'
     prefs = {}
@@ -124,6 +207,11 @@ def prepare(home, base_path=Path('/etc/codex-api/config.toml')):
     # Only the preference allowlist is carried into the next protected config.
     prefs.update(select_preferences(read_config(home/'config.toml')))
     base = base_path.read_text()
+    # Hash-verified instructions are part of managed policy, never preferences.
+    instructions=extension_instructions(managed_extensions(extensions_path))
+    if instructions:
+        if re.search(r'^developer_instructions\s*=',base,re.M):raise ValueError('Unexpected protected developer instructions')
+        base='developer_instructions = '+json.dumps(instructions)+'\n'+base
     root_end = next((m.start() for m in re.finditer(r'^\[', base, re.M)), len(base))
     prefix, tables = base[:root_end], base[root_end:]
     for key, value in prefs.items():
@@ -143,14 +231,14 @@ def prepare(home, base_path=Path('/etc/codex-api/config.toml')):
     if parsed != immutable: raise ValueError('Preference merge changed protected policy')
     atomic_write(home/'config.toml', rendered)
     atomic_write(pref_path, json.dumps(prefs, sort_keys=True) + '\n')
-    return prefs
+    return (prefs,tomllib.loads(rendered)) if return_policy else prefs
 
 
 def run(args):
     home = Path(os.environ['CODEX_HOME'])
     if str(home) != '/home/agent/.codex-api': raise ValueError('Unexpected API Codex home')
     validate_cli_args(args)
-    prepare(home)
+    _,policy=prepare(home,return_policy=True)
     child = None
     previous = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, lambda *_: None)
@@ -159,7 +247,7 @@ def run(args):
     old_term = signal.signal(signal.SIGTERM, terminate)
     try:
         env=dict(os.environ,CODEX_API_INTERACTIVE='1' if sys.stdin.isatty() and sys.stdout.isatty() and not any(a in {'exec','e','review'} for a in args) else '0')
-        child = subprocess.Popen(['codex', *args],env=env)
+        child = subprocess.Popen(['codex', *protected_cli_args(policy), *args],env=env)
         return child.wait()
     finally:
         try: save(home)

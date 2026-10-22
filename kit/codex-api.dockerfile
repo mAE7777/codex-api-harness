@@ -33,13 +33,17 @@ RUN pwcli=$(node -e 'process.stdout.write(require.resolve("playwright/package.js
 USER root
 COPY config.toml models.json /etc/codex-api/
 COPY preferences.py /etc/codex-api/preferences.py
+COPY extensions /etc/codex-api/extensions/
 COPY requirements.toml /etc/codex/requirements.toml
 COPY quota-notice.py npmrc /etc/codex-api/
 COPY workspace /etc/codex-api/workspace
 COPY quota-client.py /usr/local/bin/codex-api
 COPY entrypoint.sh /usr/local/bin/codex-api-entrypoint
 COPY web-tool.py /usr/local/bin/web-tool
-RUN chmod 0644 /etc/codex-api/* /etc/codex/requirements.toml \
+RUN find /etc/codex-api -maxdepth 1 -type f -exec chmod 0644 {} + \
+    && chmod 0644 /etc/codex/requirements.toml \
+    && find /etc/codex-api/extensions -type d -exec chmod 0755 {} + \
+    && find /etc/codex-api/extensions -type f -exec chmod 0444 {} + \
     && chmod 0755 /usr/local/bin/codex-api-entrypoint /usr/local/bin/web-tool /usr/local/bin/codex-api
 USER agent
 ENV IS_SANDBOX=1 CODEX_HOME=/home/agent/.codex-api GIT_TERMINAL_PROMPT=0

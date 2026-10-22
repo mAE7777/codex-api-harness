@@ -1,6 +1,8 @@
 """Build and verify one owned sandbox. Never reset global policy or other VMs."""
 import datetime as dt
 import fcntl
+from email.utils import formatdate
+import hashlib
 import io
 import json
 import os
@@ -10,7 +12,7 @@ import tempfile
 import threading
 import time
 
-from guard import Denied, Ledger, atomic_json
+from guard import Denied, Ledger, atomic_json, canonical
 from settings import ROOT, WORKSPACE, SBX, NAME, PORT
 
 PACKAGE_HOSTS={'registry.npmjs.org:443','pypi.org:443','files.pythonhosted.org:443'}
@@ -117,7 +119,9 @@ print(json.dumps(out))'''
         class Response(io.BytesIO):
             status=200
             def __init__(self,data,content_type):super().__init__(data);self.content_type=content_type
-            def getheader(self,name,default=''):return self.content_type if name.lower()=='content-type' else default
+            def getheader(self,name,default=''):
+                if name.lower()=='date':return formatdate(time.time(),usegmt=True)
+                return self.content_type if name.lower()=='content-type' else default
         def transport(host,path,body,headers):
             calls.append(path)
             if path.endswith('input_tokens'):return Connection(),Response(b'{"input_tokens":100}','application/json')
@@ -136,7 +140,7 @@ print(json.dumps(out))'''
         server=gateway.make_server(root,ledger,port=PORT,transport=transport)
         thread=threading.Thread(target=server.serve_forever);thread.start()
         try:
-            r=call(['exec',NAME,'/usr/local/bin/codex-api-entrypoint','--no-daemon','-m','gpt-5.6-terra','exec','--skip-git-repo-check','--json',
+            r=call(['exec',NAME,'/usr/local/bin/codex-api-entrypoint','--no-daemon','-m','gpt-5.6-terra','exec','--ephemeral','--skip-git-repo-check','--json',
                     'Offline installation check. Use the provided local tool, then answer.'],timeout=100)
             report['offline_protocol']=r.returncode==0 and 'HARNESS_OFFLINE_PASS' in r.stdout and any(outputs) and ledger.status()['unresolved']==0
             if not report['offline_protocol']:raise Denied('Offline CLI protocol acceptance failed. No provider was called.')
@@ -150,14 +154,34 @@ def prepare(configure_host=False):
     with (ROOT/'session.lock').open('a+b') as lease:
         try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise Denied('Exit the API session before preparing its sandbox.')
-        integrity();workspace_check()
+        installation = integrity();workspace_check()
+        from extensions import verify_build
+        verify_build(ROOT)
+        kit_digest=hashlib.sha256(canonical({path:digest for path,digest in installation['files'].items() if path.startswith('kit/')})).hexdigest()
         if not (ROOT/'paused').exists() or (ROOT/'gateway-process.json').exists():raise Denied('Stop the API environment before preparing it.')
         if configure_host:configure_fresh_host()
         issues=host_issues()
         if issues:raise Denied('Setup stopped:\n- '+'\n- '.join(issues)+'\nOn a fresh dedicated Docker Sandboxes installation, use codex-api prepare --configure-sandbox-host. This changes global Docker settings; existing sandboxes are never reset.')
         if (ROOT/'sandbox-created.json').exists():
             if owned_sandbox() is None:raise Denied('The owned sandbox is missing. Run codex-api reset before preparing again; usage is preserved.')
-        else:
+            marker=json.loads((ROOT/'sandbox-created.json').read_text())
+            if marker.get('kit_digest')!=kit_digest:
+                # Verify ownership before removing exactly this stopped VM.
+                # Ledger/key/project live on the host and are never recreated.
+                # An explicitly failed create never became a ready API guest;
+                # its image may not contain Python at all. Keep any original
+                # pending backup rather than trying to export that partial VM.
+                # Missing legacy metadata still requires a full capture.
+                if marker.get('build_completed') is not False:
+                    from session_state import capture
+                    capture(ROOT,SBX,NAME,marker['id'],env=clean_env())
+                print('Applying reviewed policy changes to the owned sandbox. Private session history and preferences are preserved automatically.',flush=True)
+                call(['rm',NAME,'--force'])
+                (ROOT/'sandbox-created.json').unlink()
+                ready=json.loads((ROOT/'readiness.json').read_text())
+                for key in ('image_built','filesystem_tested','network_tested','host_integrations_absent','codex_protocol_tested'):ready[key]=False
+                atomic_json(ROOT/'readiness.json',ready)
+        if not (ROOT/'sandbox-created.json').exists():
             if any(r.get('name')==NAME for r in sandbox_inventory()):raise Denied('Sandbox name already exists without ownership proof. It was not changed.')
             token=(ROOT/'gateway.token').read_text().strip()
             env=clean_env();env.update(CODEX_GATEWAY_TOKEN=token,SBX_KIT_BUILDER='sandbox')
@@ -166,19 +190,28 @@ def prepare(configure_host=False):
                 args+=['--deny-network',host]
             args+=[str(ROOT/'kit'),str(WORKSPACE)]
             print('Building the isolated environment. The first build downloads pinned tools; no model request is made.',flush=True)
-            try:call(args,capture=False,timeout=3600,env=env)
+            build_completed=False
+            try:
+                call(args,capture=False,timeout=3600,env=env)
+                build_completed=True
             finally:
                 rows=[r for r in sandbox_inventory() if r.get('name')==NAME]
                 if len(rows)==1 and rows[0].get('id') and rows[0].get('workspaces')==[str(WORKSPACE)]:
-                    atomic_json(ROOT/'sandbox-created.json',{'name':NAME,'id':rows[0]['id'],'workspace':str(WORKSPACE),'created':time.time()})
+                    atomic_json(ROOT/'sandbox-created.json',{'name':NAME,'id':rows[0]['id'],'workspace':str(WORKSPACE),'created':time.time(),
+                                'kit_digest':kit_digest if build_completed else None,'build_completed':build_completed})
             if owned_sandbox() is None:raise Denied('Sandbox ownership could not be verified.')
         try:
+            from session_state import restore, complete
+            current=owned_sandbox()
+            if current is None:raise Denied('Sandbox ownership could not be verified before restoring private history.')
+            restore(ROOT,SBX,NAME,current['id'],env=clean_env())
             issues=host_issues()
             if issues:raise Denied('Runtime policy acceptance failed. '+' '.join(issues))
             report=acceptance()
             atomic_json(ROOT/'runtime-acceptance.json',report)
             ready=json.loads((ROOT/'readiness.json').read_text())
             for key in ('docker_authenticated','image_built','filesystem_tested','network_tested','host_integrations_absent','codex_protocol_tested'):ready[key]=True
+            complete(ROOT,current['id'])
             atomic_json(ROOT/'readiness.json',ready)
             print('Sandbox ready. Isolation and local tools passed; no provider request was made. Start with codex-api.')
         finally:

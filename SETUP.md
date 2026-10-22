@@ -44,6 +44,30 @@ The installer is resumable: rerunning with the same settings verifies and preser
 
 ## 3. Ask for credentials only now
 
+First ask whether this is **personal mode**, **coordinator owner**, or **joining a shared organization**. Personal mode is the simplest default. For shared mode, follow [SHARED.md](docs/SHARED.md) now, then return to sandbox preparation and handover below. A joining member does not need an OpenAI key or a personal account configuration. Never request an unnecessary key just because the installer created a blank file.
+
+### Shared mode branch
+
+The coordinator installation is a host service. Initialize its organization, project keys and members using SHARED.md, with the owner's actual prior usage and all other organization callers stopped. Once initialized, that installation cannot run a second independent personal gateway. Do not convert or overwrite an existing personal installation.
+
+Create a separate client installation for the owner, with its own private home, launcher and unused local gateway port. Keep its project binding explicit. When the coordinator is running, join using the owner's private invite:
+
+```sh
+codex-api-client team join --invite PRIVATE_OWNER_INVITE --local
+```
+
+Here `codex-api-client` means the exact separate launcher selected during installation. `--local` uses the coordinator on the same Mac and needs no SSH key. The client account remains unconfigured locally; its upstream project key belongs only to the coordinator.
+
+For a remote member, automate the following on that member's computer:
+
+1. Install a normal isolated client without configuring a personal OpenAI account or asking for an OpenAI key.
+2. Run `codex-api team keygen`. Give the owner only the reported `.pub` file; never the adjacent private key. The owner registers it and configures `team share` before sending the refreshed private invitation.
+3. Let the member save that invitation locally. Give that exact file owner-only permissions, without printing or committing it. Verify the owner supplied it through a trusted channel.
+4. Run `codex-api team join --invite ABSOLUTE_PRIVATE_INVITE_PATH`. The invitation supplies the restricted tunnel address, port and pinned host key. The dedicated client key is selected automatically. No system SSH login or host-key prompt should be bypassed.
+5. If the invitation's private address is unreachable, ask for the reachable private LAN/VPN address. Do not open public HTTP, configure router forwarding, accept a new host key, or fall back to another account. The owner's Mac must be awake with `team serve` running.
+
+For a renewed token from the same coordinator/member, use `team join --invite FILE --replace-member-credential`. A new coordinator or member identity requires a separate installation. After successful pairing, skip personal steps 3–4 and proceed to sandbox preparation below. `codex-api`, `/model`, resume and the two-line usage remain the daily interface.
+
 The installer creates `openai-key.env` inside the private installation, mode 0600. Tell the owner the exact absolute path from the install result. Ask them to fill `OPENAI_API_KEY=` locally and reply when saved. They may use their editor; never ask them to paste the key into the conversation or a command argument. Check readiness using `codex-api doctor`; do not read or print the key yourself.
 
 Explain that they need their own OpenAI API project and a restricted key, with Responses and the five listed models permitted. Subscription access and API billing are separate. The harness does not enable account data sharing or alter billing. If complimentary usage requires data sharing, the owner must review that consequence in their account. Do not make that decision for them.
@@ -59,7 +83,7 @@ Ask:
 - **Free-only (recommended when avoiding all charges):** leave model requests blocked while complimentary eligibility or count-endpoint pricing is uncertain.
 - **Allow API charges with token protection:** explicitly permit OpenAI API charges; the daily token guard and blocked hosted tools remain. This is not a dollar spending cap.
 
-Then establish whether all other clients using the same OpenAI organization are stopped. Quotas can be organization-wide; separate projects do not prove separate pools. Recommend using a dedicated organization/account usage context. If other traffic is present or unknown, do not pass `--exclusive-organization`; requests will remain blocked. No friend/shared-quota feature is provided.
+Then establish whether all other clients using the same OpenAI organization are stopped. Quotas can be organization-wide; separate projects do not prove separate pools. Recommend using a dedicated organization/account usage context. If other traffic is present or unknown, do not pass `--exclusive-organization`; requests will remain blocked. Multiple participating people/computers must use the optional coordinator instead of independent personal ledgers.
 
 Ask for today's already-used **input plus output** tokens for each group, including other clients. Zero is appropriate only when the owner confirms no usage today. If usage cannot be established, wait for the next UTC day with other callers stopped, rather than guessing or clearing the ledger.
 
@@ -115,3 +139,11 @@ Finish with only:
 4. One reminder: real secrets belong outside the shared project.
 
 Do not ask the user to keep doing maintenance commands. Point to `docs/OPERATIONS.md` only if they need recovery or removal.
+
+## Optional capabilities, only when requested
+
+For a skill or skill-only plugin, use [EXTENSIONS.md](docs/EXTENSIONS.md). Inspect the requested local folder only, read every staged file, explain code/network references briefly, and approve the exact digest only after review. Do not import all personal skills, execute remote installers, grant new destinations, or turn on native plugins. Review is not a proof against malicious instructions.
+
+Use [UPDATES.md](docs/UPDATES.md) for a version change. Stage without executing candidate code; review its digest before running its candidate checks. Never overwrite an installed app or restore an old ledger to upgrade. An interrupted activation blocks new sessions until explicit recovery.
+
+If additional project paths should be hidden, use `codex-api protect add RELATIVE_PATH ...`. Exact paths are private host settings. The command rebuilds only the owned sandbox and preserves selected API history/preferences automatically; the project is still shared live. Explain the native per-process snapshot limit from BOUNDARIES.md; no continuous DLP claim is permitted.

@@ -1,4 +1,5 @@
 import datetime as dt
+from email.utils import formatdate
 import io
 import json
 from pathlib import Path
@@ -14,10 +15,12 @@ DAY = "2026-10-21"
 
 
 class Response(io.BytesIO):
-    def __init__(self, value=None, raw=None, status=200, content_type="application/json"):
+    def __init__(self, value=None, raw=None, status=200, content_type="application/json", date=NOW):
         super().__init__(raw if raw is not None else json.dumps(value).encode())
         self.status, self.content_type = status, content_type
+        self.date = formatdate(date,usegmt=True) if type(date) in (int,float) else date
     def getheader(self, name, default=None):
+        if name.lower()=='date':return self.date if self.date is not None else default
         return self.content_type if name.lower() == "content-type" else default
 
 
@@ -300,7 +303,7 @@ class GuardTests(unittest.TestCase):
         def disk_full(): raise OSError("simulated disk full")
         self.ledger._write_witness = disk_full
         with self.assertRaises(OSError): self.request()
-        self.assertEqual([c[1] for c in self.calls], ["/v1/responses/input_tokens"])
+        self.assertEqual(self.calls, [])  # Durable admission fails before counting.
         with self.assertRaises(Denied): self.ledger.reserve("openai:A", DAY, 1, {})
 
     def test_incomplete_sse_with_usage_is_accounted(self):

@@ -2,7 +2,19 @@
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+PAYLOAD = Path(__file__).resolve().parent.parent
+anchor = PAYLOAD / '.installation-root'
+if anchor.exists() or anchor.is_symlink():
+    if anchor.is_symlink() or not anchor.is_file() or anchor.stat().st_nlink != 1 or anchor.stat().st_size > 8192:
+        raise ValueError('The code generation installation anchor is unsafe')
+    binding = json.loads(anchor.read_text())
+    if not isinstance(binding,dict) or set(binding)!={'version','root'} or binding['version']!=2 or not isinstance(binding['root'],str):
+        raise ValueError('The code generation installation anchor is invalid')
+    ROOT = Path(binding['root'])
+    if not ROOT.is_absolute() or ROOT.is_symlink() or ROOT.resolve()!=ROOT:
+        raise ValueError('The permanent installation root is invalid')
+else:
+    ROOT = PAYLOAD  # Source checkout or a legacy, separately reviewed install.
 DEFAULT_HOME = Path.home() / 'Library/Application Support/CodexAPIHarness'
 path = ROOT / 'settings.json'
 if path.is_symlink():

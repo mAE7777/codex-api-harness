@@ -253,7 +253,7 @@ class DiagnosticTests(DailyFixture):
     def test_explain_is_local_and_permission_summary_has_no_key(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             result=controller.explain('daily_token_limit')
-        self.assertIn('00:00 UTC',result['next_step']);self.assertTrue(out.getvalue().isascii());self.assertEqual(self.calls,[])
+        self.assertIn('00:00:15 UTC',result['next_step']);self.assertTrue(out.getvalue().isascii());self.assertEqual(self.calls,[])
 
     def test_stale_gateway_marker_is_not_reported_as_running(self):
         atomic_json(self.root/'gateway-process.json',{'pid':12345,'identity':'old gateway'})

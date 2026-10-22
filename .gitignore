@@ -25,3 +25,16 @@ vendor/
 dist/
 build/
 *.egg-info/
+team/
+guest-state/
+extensions/
+releases/
+upgrades/
+team-client.json
+team-known-hosts*
+team-tunnel.key*
+protected-paths.json
+ledger-witness.json
+upgrade-pending.json
+*.key
+*.sock

@@ -5,8 +5,10 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import re
 import sqlite3
 import threading
 import time
@@ -17,6 +19,9 @@ MODELS = {
     "gpt-5.6-terra": "B", "gpt-5.6-luna": "B",
 }
 DAILY_LIMITS = {'A': 237500, 'B': 2375000}
+REQUEST_DEADLINE_SECONDS = 600
+UTC_NEW_DAY_GUARD_SECONDS = 15
+UTC_OVERLAP_SECONDS = REQUEST_DEADLINE_SECONDS + UTC_NEW_DAY_GUARD_SECONDS
 POOL_LABELS = {'A': '6.1 Sol / 6 Astra / 6 Luna', 'B': '5.6 Terra / 5.6 Luna'}
 LOCAL_FUNCTIONS = {"exec_command", "write_stdin", "shell", "shell_command",
                    "update_plan", "request_user_input", "request_user_input_async", "view_image", "wait", "sleep"}
@@ -35,6 +40,17 @@ class Denied(Exception):
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+
+
+def utc_admission(now, *, counted=False):
+    """Briefly avoid a provider whose UTC day could still be the previous day."""
+    instant=dt.datetime.fromtimestamp(now,dt.timezone.utc)
+    midnight=instant.replace(hour=0,minute=0,second=0,microsecond=0)
+    elapsed=(instant-midnight).total_seconds()
+    if elapsed<UTC_NEW_DAY_GUARD_SECONDS:
+        retry=math.ceil(UTC_NEW_DAY_GUARD_SECONDS-elapsed)
+        tail='Token counting may already have occurred.' if counted else 'No token-counting request was sent in this attempt.'
+        raise Denied('UTC daily quota transition: requests resume at 00:00:15 UTC. No model request was sent. '+tail+' Retry manually after '+str(retry)+' seconds.',code='utc_day_transition',status=429,details={'retry_after_seconds':retry,'resume_at':(midnight+dt.timedelta(seconds=UTC_NEW_DAY_GUARD_SECONDS)).isoformat()})
 
 
 def atomic_json(path, value):
@@ -290,6 +306,14 @@ class Ledger:
         if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='quota_notices'").fetchone():
             with self.transaction():
                 self.db.execute('CREATE TABLE quota_notices (period TEXT NOT NULL, group_id TEXT NOT NULL, threshold INTEGER NOT NULL, claimed REAL NOT NULL, PRIMARY KEY(period,group_id,threshold))')
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'").fetchone():
+            with self.transaction():
+                self.db.execute('''CREATE TABLE operations (
+                    correlation_id TEXT PRIMARY KEY, namespace TEXT NOT NULL,
+                    operation_hash TEXT NOT NULL, payload_hash TEXT NOT NULL,
+                    phase TEXT NOT NULL, request_id TEXT, provider_request_id TEXT,
+                    created REAL NOT NULL, updated REAL NOT NULL,
+                    UNIQUE(namespace, operation_hash))''')
         # A crash with a merely reserved request also requires reconciliation.
 
     def _head(self):
@@ -323,6 +347,56 @@ class Ledger:
             if self.db.execute("SELECT 1 FROM budgets WHERE scope=? AND period=?", (scope, period)).fetchone():
                 raise Denied("Existing budgets cannot be reset")
             self.db.execute("INSERT INTO budgets VALUES (?,?,?,?)", (scope, period, ceiling, baseline))
+
+    def begin_operation(self, payload, operation_id=None, namespace='local'):
+        """Claim an explicit logical operation before any counting request.
+
+        Replays are refused, including operations interrupted before dispatch.
+        There is deliberately no response-content cache or implicit prompt dedup.
+        Only hashes of caller identifiers and request bodies are persisted.
+        """
+        if not isinstance(namespace, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', namespace):
+            raise Denied('The operation namespace is invalid.', code='invalid_operation_id')
+        if operation_id is None: operation_id = uuid.uuid4().hex
+        if not isinstance(operation_id, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{8,128}', operation_id):
+            raise Denied('Idempotency-Key must contain 8 to 128 letters, digits, dots, colons, underscores or hyphens.', code='invalid_operation_id')
+        digest = hashlib.sha256(canonical(payload)).hexdigest()
+        operation_hash = hashlib.sha256(operation_id.encode('ascii')).hexdigest()
+        correlation_id = uuid.uuid4().hex
+        self.check_clock()
+        with self.transaction():
+            prior = self.db.execute('SELECT correlation_id,payload_hash,phase,request_id FROM operations WHERE namespace=? AND operation_hash=?', (namespace, operation_hash)).fetchone()
+            if prior:
+                details = {'correlation_id': prior[0], 'operation_phase': prior[2]}
+                if prior[3]: details['request_id'] = prior[3]
+                if prior[1] != digest:
+                    raise Denied('This Idempotency-Key was already used with a different request. No counting or model request was sent. Use a new key only for an intentional new operation.', code='operation_id_conflict', status=409, details=details)
+                raise Denied('This operation was already admitted. It was not sent again and no response content is cached. Check its recorded state; use a new Idempotency-Key only for an intentional new request.', code='duplicate_operation', status=409, details=details)
+            if self.db.execute('SELECT paused FROM meta').fetchone()[0]: raise Denied('Gateway is paused')
+            now = self.clock()
+            self.db.execute('INSERT INTO operations VALUES (?,?,?,?,?,NULL,NULL,?,?)', (correlation_id, namespace, operation_hash, digest, 'admitted', now, now))
+        return correlation_id
+
+    def mark_operation(self, correlation_id, phase, request_id=None, provider_request_id=None):
+        phases = {'admitted', 'counting', 'reserved', 'dispatched', 'completed', 'failed'}
+        if phase not in phases or not isinstance(correlation_id, str) or not re.fullmatch(r'[0-9a-f]{32}', correlation_id):
+            raise Denied('Invalid operation transition.', code='operation_state_invalid')
+        if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r'[0-9a-f]{32}', request_id)):
+            raise Denied('Invalid operation attempt identity.', code='operation_state_invalid')
+        if provider_request_id is not None and (not isinstance(provider_request_id, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', provider_request_id)):
+            raise Denied('Invalid provider request identity.', code='operation_state_invalid')
+        transitions = {'admitted': {'counting','reserved','dispatched','failed'},
+                       'counting': {'reserved','failed'}, 'reserved': {'dispatched','failed'},
+                       'dispatched': {'completed','failed'}, 'completed': set(), 'failed': set()}
+        with self.transaction():
+            prior = self.db.execute('SELECT phase,request_id,provider_request_id FROM operations WHERE correlation_id=?', (correlation_id,)).fetchone()
+            if not prior or phase != prior[0] and phase not in transitions[prior[0]]:
+                raise Denied('The operation state changed; no request was repeated.', code='operation_state_invalid')
+            if request_id is not None and prior[1] is not None and prior[1] != request_id:
+                raise Denied('An operation cannot acquire another provider attempt.', code='operation_state_invalid')
+            if provider_request_id is not None and prior[2] is not None and prior[2] != provider_request_id:
+                raise Denied('The provider request identity changed.', code='operation_state_invalid')
+            self.db.execute('UPDATE operations SET phase=?,request_id=COALESCE(request_id,?),provider_request_id=COALESCE(provider_request_id,?),updated=? WHERE correlation_id=?', (phase, request_id, provider_request_id, self.clock(), correlation_id))
 
     def pause(self, paused=True):
         with self.transaction(): self.db.execute("UPDATE meta SET paused=?", (int(paused),))
@@ -378,7 +452,7 @@ class Ledger:
     def daily_remaining(self, group, ceiling):
         """One durable daily pool; legacy unclassified usage is charged to both groups."""
         if (self.root/'safety-stop.json').exists():
-            raise Denied('Actual usage exceeded a reservation. Reconcile the ledger before sending more model requests.',code='quota_reconciliation_required')
+            raise Denied('Recorded token usage needs reconciliation before further model requests.',code='quota_reconciliation_required')
         now = self.check_clock()
         period, scope = now.strftime("%Y-%m-%d"), "openai:" + group
         with self.transaction():
@@ -406,9 +480,21 @@ class Ledger:
 
     def reject(self, request_id):
         # An explicit provider rejection has no terminal model usage. Keep the debit
-        # conservatively for this day without turning it into an in-flight request.
+        # conservatively, including the UTC overlap, without leaving it in flight.
         with self.transaction():
-            self.db.execute("UPDATE requests SET phase='rejected' WHERE id=? AND phase='unknown'",(request_id,))
+            row=self.db.execute('SELECT scope,period,created,reserved,phase FROM requests WHERE id=?',(request_id,)).fetchone()
+            if row is None or row[4]!='unknown':return
+            self.db.execute("UPDATE requests SET phase='rejected' WHERE id=?",(request_id,))
+            today=dt.datetime.fromtimestamp(self.clock(),dt.timezone.utc).strftime('%Y-%m-%d')
+            self._terminal_carry(request_id,row[0],row[1],row[2],row[3],today)
+
+    def note_usage_conflict(self, request_id):
+        """Keep uncertain usage fully reserved and stop further model admission."""
+        with self.mutex:
+            row=self.db.execute('SELECT phase FROM requests WHERE id=?',(request_id,)).fetchone()
+            if row!=('unknown',):raise Denied('A usage conflict requires an unresolved dispatched request.',code='operation_state_invalid')
+            path=self.root/'safety-stop.json'
+            if not path.exists():atomic_json(path,{'reason':'terminal_usage_conflict','request_id':request_id})
 
     def void_unsent(self, request_id):
         with self.transaction():
@@ -426,12 +512,13 @@ class Ledger:
 
     def settle(self, request_id, actual):
         if type(actual) is not int or actual < 0: raise Denied("Missing or invalid terminal usage")
-        prior=self.db.execute('SELECT reserved,scope FROM requests WHERE id=?',(request_id,)).fetchone()
-        if prior and prior[1]!='openai:metered' and actual>prior[0]:
-            atomic_json(self.root/'safety-stop.json',{'reason':'usage_above_reservation','request_id':request_id})
-            raise Denied('Actual usage exceeded the reservation. Further model requests are blocked until the count discrepancy is reconciled.',code='usage_above_reservation')
+        with self.mutex:
+            prior=self.db.execute('SELECT reserved,scope FROM requests WHERE id=?',(request_id,)).fetchone()
+            if prior and prior[1]!='openai:metered' and actual>prior[0]:
+                atomic_json(self.root/'safety-stop.json',{'reason':'usage_above_reservation','request_id':request_id})
+                raise Denied('Actual usage exceeded the reservation. Further model requests are blocked until the count discrepancy is reconciled.',code='usage_above_reservation')
         with self.transaction():
-            row = self.db.execute("SELECT reserved,actual,phase,scope,period FROM requests WHERE id=?", (request_id,)).fetchone()
+            row = self.db.execute("SELECT reserved,actual,phase,scope,period,created FROM requests WHERE id=?", (request_id,)).fetchone()
             if row is None: raise Denied("Unknown request")
             if row[2] == "settled":
                 if row[1] != actual: raise Denied("Conflicting duplicate usage")
@@ -440,8 +527,28 @@ class Ledger:
                 raise Denied("Usage exceeded reservation or invalid phase")
             self.db.execute("UPDATE requests SET actual=?,phase='settled' WHERE id=?", (actual, request_id))
             today=dt.datetime.fromtimestamp(self.clock(),dt.timezone.utc).strftime('%Y-%m-%d')
-            if row[3].startswith('openai:') and row[4]!=today:
-                self.db.execute("INSERT OR REPLACE INTO carryovers VALUES (?,?,?,?)",(request_id,today,row[3],actual))
+            self._terminal_carry(request_id,row[3],row[4],row[5],actual,today)
+
+    def _terminal_carry(self, request_id, scope, period, created, amount, today):
+        """Conservatively cover ambiguous UTC attribution without a blackout.
+
+        This runs inside a terminal-state or reconciliation witnessed transaction.
+        A near-midnight request can count against the next local day even when
+        its terminal event arrived before local midnight. This is a safety
+        overlap, not a claim about which provider UTC bucket was actually used.
+        """
+        targets=set()
+        if scope.startswith('openai:') and period!=today:targets.add(today)
+        if scope in {'openai:A','openai:B'} and re.fullmatch(r'\d{4}-\d{2}-\d{2}',period):
+            started=dt.datetime.fromtimestamp(created,dt.timezone.utc)
+            if started.strftime('%Y-%m-%d')==period:
+                midnight=started.replace(hour=0,minute=0,second=0,microsecond=0)+dt.timedelta(days=1)
+                seconds=midnight.timestamp()-created
+                if 0<seconds<=UTC_OVERLAP_SECONDS:targets.add(midnight.strftime('%Y-%m-%d'))
+        for target in targets:
+            # One request/day primary key prevents a genuine next-day terminal
+            # from being counted a second time by the overlap rule.
+            self.db.execute('INSERT OR REPLACE INTO carryovers VALUES (?,?,?,?)',(request_id,target,scope,amount))
 
     def status(self):
         with self.mutex:
@@ -474,6 +581,26 @@ class Ledger:
             return pending
 
     def reconcile(self, plan):
+        result=self._reconcile(plan)
+        # A crash between the durable receipt and this optional clear is safe;
+        # replaying the identical receipt can finish the clear without a refund.
+        with self.mutex:
+            path=self.root/'safety-stop.json'
+            if path.exists():
+                stop=json.loads(path.read_text())
+                if (stop.get('reason')=='terminal_usage_conflict'
+                    and self.db.execute('SELECT 1 FROM resolutions WHERE request_id=?',(stop.get('request_id'),)).fetchone()
+                    and not self.db.execute("SELECT 1 FROM requests WHERE scope LIKE 'openai:%' AND phase IN ('reserved','unknown','rejected')").fetchone()):
+                    if json.loads((self.root/'ledger-witness.json').read_text())!=self._head():
+                        raise Denied('Usage receipt and witness differ; the safety stop was retained.',code='quota_reconciliation_required')
+                    path.unlink()
+                    descriptor=os.open(self.root,os.O_RDONLY)
+                    try:os.fsync(descriptor)
+                    finally:os.close(descriptor)
+            result['safety_stop_preserved']=path.exists()
+        return result
+
+    def _reconcile(self, plan):
         """Apply a reviewed host-only receipt; never infer that missing usage is zero."""
         keys = {'version','resolution_id','request_id','expected_phase','expected_reserved_tokens','action','actual_tokens','evidence'}
         if not isinstance(plan, dict) or set(plan) != keys or type(plan['version']) is not int or plan['version'] != 1:
@@ -502,21 +629,20 @@ class Ledger:
             if prior:
                 if prior[0] != digest: raise Denied('Conflicting reconciliation; recorded usage was not changed')
                 return {'applied':False, 'request_id':plan['request_id'], 'action':action}
-            row = self.db.execute('SELECT scope,period,reserved,phase FROM requests WHERE id=?', (plan['request_id'],)).fetchone()
+            row = self.db.execute('SELECT scope,period,reserved,phase,created FROM requests WHERE id=?', (plan['request_id'],)).fetchone()
             if not row or row[0] not in {'openai:A','openai:B'}: raise Denied('This receipt requires a classified daily-pool request')
-            scope, period, reserved, phase = row
+            scope, period, reserved, phase, created = row
             if phase not in {'reserved','unknown','rejected'} or phase != plan['expected_phase'] or reserved != plan['expected_reserved_tokens']:
                 raise Denied('Request state changed; review a new receipt before applying')
             charged = actual if action == 'record_actual' else reserved if action == 'confirm_consumed' else 0
-            if action == 'record_actual' and actual > reserved and not (self.root/'safety-stop.json').exists():
+            if action == 'record_actual' and actual > reserved:
                 atomic_json(self.root/'safety-stop.json', {'reason':'usage_above_reservation', 'request_id':plan['request_id']})
             new_phase = 'settled' if action == 'record_actual' else 'resolved_conservative' if action == 'confirm_consumed' else 'reconciled_unused'
             self.db.execute('UPDATE requests SET actual=?,reserved=?,phase=? WHERE id=?',
                             (actual if action == 'record_actual' else None if action == 'confirm_consumed' else 0,
                              reserved if action != 'confirm_unused' else 0, new_phase,plan['request_id']))
             today = self.check_clock().strftime('%Y-%m-%d')
-            if today != period:
-                self.db.execute('INSERT OR REPLACE INTO carryovers VALUES (?,?,?,?)', (plan['request_id'],today,scope,charged))
+            self._terminal_carry(plan['request_id'],scope,period,created,charged,today)
             self.db.execute('INSERT INTO resolutions VALUES (?,?,?,?,?,?,?)',
                             (plan['resolution_id'],plan['request_id'],digest,action,actual,hashlib.sha256(canonical(evidence)).hexdigest(),self.clock()))
         return {'applied':True, 'request_id':plan['request_id'], 'action':action,

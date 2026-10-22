@@ -42,6 +42,9 @@ Inside Codex, use `!codex-api usage`. It makes no model call and still prints on
 - **Local coding tools.** Shell, patches and installed Playwright CLI. npm/PyPI downloads are limited to three hosts and HTTPS GET/HEAD.
 - **Hosted tools blocked.** OpenAI web/file search, hosted execution, remote MCP, storage and unknown tool types are rejected. Image/video generation, transcription and speech output stay disabled.
 - **Useful failures.** Specific English errors, `doctor`, permission explanations and explicit reconciliation for uncertain usage. No automatic retries, model switch or quota reset.
+- **Optional shared organization.** One coordinator enforces organization, project and member budgets together. Fixed daily allocations, temporary transfers, quota requests, revocation and private invitations work across computers. [Shared setup](docs/SHARED.md).
+- **Reviewed skills.** Stage local skill bytes, inspect the report, then approve their exact digest. Skill-only plugin bundles are supported; native plugins, MCP and plugin hooks stay disabled. [Extensions](docs/EXTENSIONS.md).
+- **Safe maintenance.** Reviewed code generations, explicit crash recovery, code-only rollback, private key rotation, and additional exact protected paths. Rebuilds preserve this API environment's selected history and preferences. [Updates](docs/UPDATES.md).
 
 ## Costs and safety boundaries
 
@@ -51,7 +54,7 @@ Only your chosen project is mounted, and edits affect the original files immedia
 
 Docker has some machine-wide settings. Setup reports unsafe shared settings and stops. Initial host configuration requires an explicit step, is allowed only on a fresh sandbox host, and is never a global reset. Removing this harness never prunes other sandboxes, stops the shared daemon, or removes your project.
 
-No shared quotas, user accounts, hosted dashboard or cloud sandbox billing. Each person uses their own installation, credentials and accounting assumptions. Exa/Tavily adapters are included but disabled pending separate account verification; Brave is disabled and has no active adapter. Do not supply search keys during initial setup.
+Personal mode remains the default. Shared mode uses the owner's Mac and a restricted encrypted tunnel; it adds no hosted dashboard or paid server requirement. The coordinator owner can see requests while forwarding them. Every caller using that organization must participate: unrelated keys, Playground and other programs cannot be fenced by this harness. Coordinator loss stops requests. Exa/Tavily adapters remain disabled pending separate account verification; Brave has no active adapter. Search providers stay disabled in shared mode.
 
 ## Maintenance
 
@@ -59,12 +62,16 @@ No shared quotas, user accounts, hosted dashboard or cloud sandbox billing. Each
 codex-api doctor                 # local checks; no provider call
 codex-api explain permissions
 codex-api reconcile              # inspect uncertain usage; no automatic refund
+codex-api team allocations       # owner: today's shared allocations
+codex-api extensions list        # reviewed skill catalog
+codex-api protect list           # additional owner-selected protected paths
+codex-api credentials stage      # create a private replacement-key file
 codex-api stop                   # recovery if the original terminal disappeared
 codex-api reset                  # remove only the owned sandbox; preserve usage and keys
 codex-api retire                 # remove that sandbox and archive private state
 ```
 
-The installer refuses to overwrite another `codex-api` command or an altered installation. Runtime versions are pinned; upgrades require review and must preserve the ledger. See [verification](docs/VERIFICATION.md), [operations](docs/OPERATIONS.md), [security](SECURITY.md) and [contributing](CONTRIBUTING.md).
+The installer refuses to overwrite another command or altered installation. Runtime versions are pinned. Upgrades stage reviewed code before an atomic generation switch; credentials and accounting are permanent state and never roll back. See [capabilities](docs/CAPABILITIES.md), [verification](docs/VERIFICATION.md), [operations](docs/OPERATIONS.md), [security](SECURITY.md) and [contributing](CONTRIBUTING.md).
 
 ```sh
 python3 scripts/check.py         # regression tests; fake providers only

@@ -48,6 +48,14 @@ class ControllerTests(unittest.TestCase):
                 launch.assert_not_called()
         self.assertFalse((self.root/'paused').exists())
 
+    def test_health_check_uses_only_the_configured_gateway_port(self):
+        (self.root/'gateway-process.json').write_text(json.dumps({'pid':12345,'identity':'gateway-test'}))
+        with patch.object(controller,'PORT',49273),patch.object(controller,'process_identity',return_value='gateway-test'),patch.object(controller.http.client,'HTTPConnection') as connection:
+            response=connection.return_value.getresponse.return_value
+            response.status=200;response.read.return_value=b'{"pid":12345}'
+            self.assertEqual(controller.runtime_state(),'running')
+            connection.assert_called_once_with('127.0.0.1',49273,timeout=.4)
+
     def test_reset_and_retire_cannot_race_an_active_session(self):
         with (self.root/'session.lock').open('a+b') as lease:
             fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)

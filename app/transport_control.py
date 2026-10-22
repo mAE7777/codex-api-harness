@@ -4,11 +4,11 @@ import socket
 import threading
 import time
 
-from guard import Denied
+from guard import Denied, REQUEST_DEADLINE_SECONDS
 
 
 class RequestControl:
-    def __init__(self, cancelled, paused, *, total=600, phase_timeout=120):
+    def __init__(self, cancelled, paused, *, total=REQUEST_DEADLINE_SECONDS, phase_timeout=120):
         self.cancelled, self.paused = cancelled, paused
         self.total_deadline = time.monotonic()+total
         self.phase = 'admission'

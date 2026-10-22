@@ -1,6 +1,7 @@
 """Local-only broker. Upstream origins and routes are constants, never client input."""
 from __future__ import annotations
 import datetime as dt
+from email.utils import format_datetime, parsedate_to_datetime
 import hashlib
 import hmac
 import http.client
@@ -18,7 +19,7 @@ import threading
 import time
 import urllib.parse
 
-from guard import Denied, Ledger, MODELS, DAILY_LIMITS, atomic_json, canonical, normalize, read_quota
+from guard import Denied, Ledger, MODELS, DAILY_LIMITS, atomic_json, canonical, normalize, read_quota, utc_admission
 from transport_control import RequestControl
 from workspace_policy import check_workspace
 
@@ -159,6 +160,38 @@ def read_json(response, limit=512_000):
     return decode_json(data)
 
 
+def terminal_tokens(usage):
+    """Validate authoritative terminal counters before presenting success."""
+    if usage is None:
+        raise Denied('Complete terminal usage was not received. The full reservation was retained; usage was not treated as zero.', code='terminal_usage_missing', status=502)
+    if not isinstance(usage, dict):
+        raise Denied('Terminal token usage is invalid. The full reservation was retained; no usage was guessed.', code='terminal_usage_invalid', status=502)
+    counters = [usage.get('input_tokens'), usage.get('output_tokens')]
+    maximum = 2**53-1
+    if any(type(v) is not int or not 0 <= v <= maximum for v in counters) or sum(counters) > maximum:
+        raise Denied('Terminal token usage is invalid. The full reservation was retained; no usage was guessed.', code='terminal_usage_invalid', status=502)
+    total = sum(counters)
+    if 'total_tokens' in usage and (type(usage['total_tokens']) is not int or usage['total_tokens'] != total):
+        raise Denied('Terminal token totals disagree. The full reservation was retained; no usage was guessed.', code='terminal_usage_invalid', status=502)
+    return total
+
+
+def verify_provider_clock(response, now):
+    """Use this existing TLS response as bounded clock evidence; no extra call."""
+    header=response.getheader('Date')
+    if not isinstance(header,str) or not re.fullmatch(r'(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT',header):
+        raise Denied('The token-count response has no valid GMT Date header. The provider clock could not be verified, so no model request was sent. Counting may already have occurred.',code='provider_clock_unverified',status=503)
+    try:
+        instant=parsedate_to_datetime(header)
+        if format_datetime(instant,usegmt=True)!=header:raise ValueError()
+        offset=instant.timestamp()-now
+    except (ValueError,TypeError,OverflowError):
+        raise Denied('The token-count response Date header is invalid. No model request was sent. Counting may already have occurred.',code='provider_clock_unverified',status=503)
+    # Five seconds of clock tolerance plus one second of HTTP Date precision.
+    if abs(offset)>6:
+        raise Denied('The local UTC clock and provider Date differ by more than six seconds. No model request was sent. Check automatic date/time synchronization, then retry manually. Counting may already have occurred.',code='provider_clock_mismatch',status=503,details={'provider_offset_seconds':round(offset,3)})
+
+
 class Broker:
     def __init__(self, root, ledger, transport=upstream, clock=time.time):
         self.root, self.ledger, self.transport, self.clock = Path(root), ledger, transport, clock
@@ -167,6 +200,8 @@ class Broker:
 
     def receipt(self, provider):
         if (self.root / "paused").exists(): raise Denied("Gateway is paused")
+        if provider=='openai' and (self.root/'team').exists():
+            raise Denied('This installation owns an organization coordinator. Use a separate client joined to it; an independent personal ledger cannot run alongside it.',code='team_client_required')
         data = json.loads((self.root / "verification.json").read_text())
         entry = data.get(provider, {})
         if provider == "openai" and entry.get("billing_policy") == "metered":
@@ -199,15 +234,25 @@ class Broker:
     def unchanged(self, provider, receipt):
         if canonical(self.receipt(provider)) != canonical(receipt): raise Denied("Verification changed before dispatch")
 
-    def openai(self, payload, send_headers, send_chunk, cancelled=lambda:False):
+    def openai(self, payload, send_headers, send_chunk, cancelled=lambda:False, *, operation_id=None, operation_namespace='local'):
+        operation = {}
         with RequestControl(cancelled, lambda:(self.root/'paused').exists()) as control:
             try:
-                return self._openai(payload, send_headers, send_chunk, control)
-            except Exception:
-                control.check()
-                raise
+                result = self._openai(payload, send_headers, send_chunk, control, operation, operation_id, operation_namespace)
+                if operation: self.ledger.mark_operation(operation['id'], 'completed')
+                return result
+            except Exception as error:
+                try: control.check()
+                except Denied as cancelled_error: error = cancelled_error
+                if operation:
+                    # Admission itself is durable, even if a counting call failed.
+                    # A later replay must never silently retry an uncertain call.
+                    self.ledger.mark_operation(operation['id'], 'failed')
+                    if isinstance(error, Denied): error.details.setdefault('correlation_id', operation['id'])
+                    else: error.correlation_id = operation['id']
+                raise error
 
-    def _openai(self, payload, send_headers, send_chunk, control):
+    def _openai(self, payload, send_headers, send_chunk, control, operation, operation_id, operation_namespace):
         def request(path, body, headers, phase, timeout):
             def call():
                 if self.transport is upstream:
@@ -216,11 +261,15 @@ class Broker:
             return control.call(call, phase, timeout, returns_connection=True)
         receipt = self.receipt("openai")
         self.workspace_guard()
+        if (self.ledger.root/'safety-stop.json').exists():
+            raise Denied('Recorded token usage needs reconciliation. No counting or model request was sent; run codex-api reconcile.',code='quota_reconciliation_required')
         daily=receipt.get('quota_guard') is True
         cap=receipt.get('output_token_cap',4096) if daily else 4096
         if type(cap) is not int or not 1<=cap<=16384: raise Denied('Invalid configured output cap')
         normalized = normalize(payload,output_cap=cap)
-        key = credentials(self.root / "openai-key.env")["OPENAI_API_KEY"]
+        utc_admission(self.clock())
+        operation['id'] = self.ledger.begin_operation(normalized, operation_id, namespace=operation_namespace)
+        key = credentials(getattr(self,'key_path',self.root / "openai-key.env"))["OPENAI_API_KEY"]
         headers = {"Authorization": "Bearer " + key, "OpenAI-Organization": receipt["organization_id"], "OpenAI-Project": receipt["project_id"]}
         metered = receipt.get("billing_policy") == "metered"
         if daily:
@@ -233,8 +282,12 @@ class Broker:
             if info['remaining'] < normalized['max_output_tokens']:
                 raise Denied(f"Group {group} has {info['remaining']:,} tokens remaining, which cannot cover this output reservation. No counting or model request was sent. Use /model to select the other group or wait until 00:00 UTC.",code='daily_token_limit',status=429,details=info)
             count_fields={k:v for k,v in normalized.items() if k in {'model','input','instructions','tools','tool_choice','parallel_tool_calls','reasoning','text','truncation'}}
+            self.ledger.mark_operation(operation['id'], 'counting')
+            utc_admission(self.clock())
             conn,response=request('/v1/responses/input_tokens',count_fields,headers,'input_count',30)
-            try: count=control.call(lambda:read_json(response).get('input_tokens'),'input_count',30)
+            try:
+                if response.status==200:verify_provider_clock(response,self.clock())
+                count=control.call(lambda:read_json(response).get('input_tokens'),'input_count',30)
             finally: conn.close()
             if type(count) is not int or count<0: raise Denied('Exact input token counting failed. No model request was sent.',code='input_count_unavailable')
             control.check()
@@ -244,27 +297,49 @@ class Broker:
             request_id = self.ledger.begin_metered(normalized)
         else:
             count_fields = {k: v for k, v in normalized.items() if k in {"model", "input", "instructions", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "text", "truncation"}}
+            self.ledger.mark_operation(operation['id'], 'counting')
+            utc_admission(self.clock())
             conn, response = request('/v1/responses/input_tokens', count_fields, headers, 'input_count', 30)
-            try: count = control.call(lambda:read_json(response).get('input_tokens'), 'input_count', 30)
+            try:
+                if response.status==200:verify_provider_clock(response,self.clock())
+                count = control.call(lambda:read_json(response).get('input_tokens'), 'input_count', 30)
             finally: conn.close()
             if type(count) is not int or count < 0: raise Denied("Exact input count is unavailable")
             now = self.ledger.check_clock()
             period = now.strftime("%Y-%m-%d")
             group = MODELS[normalized["model"]]
             request_id = self.ledger.reserve("openai:" + group, period, count + normalized["max_output_tokens"], normalized)
+        self.ledger.mark_operation(operation['id'], 'reserved', request_id=request_id)
         try:
             control.check()
             self.workspace_guard()
             self.unchanged("openai", receipt)
+            utc_admission(self.clock(),counted=daily or not metered)
             if daily: self.ledger.dispatch_daily(request_id)
             elif not metered: self.ledger.dispatch(request_id)
+            self.ledger.mark_operation(operation['id'], 'dispatched')
         except Exception:
             if daily:self.ledger.void_unsent(request_id)
             raise
         conn, response = request('/v1/responses', normalized, headers, 'response_headers', 120)
         terminal = None
         disconnected = False
+        def accept_terminal(candidate, *, settle=True):
+            nonlocal terminal
+            try:actual = terminal_tokens(candidate)
+            except Denied:
+                if terminal is not None:self.ledger.note_usage_conflict(request_id)
+                raise
+            if terminal is not None and terminal != candidate:
+                self.ledger.note_usage_conflict(request_id)
+                raise Denied('Conflicting terminal usage records were received. The full reservation is retained and further model requests are stopped until reconciliation.', code='terminal_usage_conflict', status=502)
+            if terminal is None:
+                if settle:self.ledger.settle(request_id, actual)
+                terminal = candidate
         try:
+            provider_request_id = response.getheader('x-request-id', '')
+            if isinstance(provider_request_id, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', provider_request_id):
+                self.ledger.mark_operation(operation['id'], 'dispatched', provider_request_id=provider_request_id)
             if response.status != 200:
                 error=control.call(lambda:provider_error(response), 'response_error', 30)
                 if 400<=response.status<500: self.ledger.reject(request_id)
@@ -273,6 +348,7 @@ class Broker:
                 if "text/event-stream" not in response.getheader("Content-Type", ""): raise Denied("Unexpected upstream streaming format")
                 send_headers("text/event-stream")
                 event_data, event_lines, event_size, total_size = [], [], 0, 0
+                terminal_chunks=[]
                 control.begin('response_stream', 120)
                 while True:
                     control.check()
@@ -289,21 +365,40 @@ class Broker:
                         if raw and raw != b"[DONE]":
                             event = decode_json(raw)
                             if event.get("type") in {"response.completed", "response.incomplete", "response.failed"}:
-                                candidate = event.get("response", {}).get("usage")
-                                if candidate is not None:
-                                    if terminal is not None and terminal != candidate: raise Denied("Conflicting terminal usage")
-                                    terminal = candidate
-                            failure=event.get('response',{}).get('error') if event.get('type')=='response.failed' else event.get('error',event) if event.get('type')=='error' else None
+                                response_body = event.get('response')
+                                if not isinstance(response_body, dict): accept_terminal(False,settle=False)
+                                candidate = response_body.get('usage')
+                                if event.get('type')=='response.failed':
+                                    if terminal is not None:self.ledger.note_usage_conflict(request_id)
+                                    failure=response_body.get('error')
+                                    if isinstance(failure,dict):raise stream_failure(failure)
+                                    terminal_tokens(candidate)
+                                    raise Denied('OpenAI reported a failed response without a valid error record. The full reservation is retained and no terminal success was forwarded.',code='upstream_response_failed',status=502)
+                                accept_terminal(candidate,settle=False)
+                            failure=event.get('error',event) if event.get('type')=='error' else None
                             if isinstance(failure,dict):raise stream_failure(failure)
-                        if not disconnected:
-                            try:send_chunk(b''.join(event_lines))
+                        chunk=b''.join(event_lines)
+                        if terminal is not None or raw==b'[DONE]':
+                            # Keep every terminal event private until clean EOF
+                            # proves there is no later conflicting usage record.
+                            terminal_chunks.append(chunk)
+                        elif not disconnected:
+                            try:send_chunk(chunk)
                             except (BrokenPipeError,ConnectionResetError):
                                 disconnected=True
-                                if daily: control.abort(Denied('The client disconnected; the full reservation is retained for unconfirmed usage.',code='client_cancelled')); control.check()
+                                control.abort(Denied('The client disconnected; the full reservation is retained for unconfirmed usage.',code='client_cancelled')); control.check()
                         event_data,event_lines,event_size=[],[],0
+                control.check()
+                if event_lines:
+                    raise Denied('The stream ended inside an unfinished event. The full reservation is retained and no terminal success was forwarded.',code='terminal_usage_missing',status=502)
+                if terminal is not None:
+                    self.ledger.settle(request_id,terminal_tokens(terminal))
+                    for chunk in terminal_chunks:
+                        try:send_chunk(chunk)
+                        except (BrokenPipeError,ConnectionResetError):break
             else:
                 body = control.call(lambda:read_json(response, limit=4_000_000), 'response_body', 120)
-                terminal = body.get("usage")
+                accept_terminal(body.get("usage") if isinstance(body, dict) else False)
                 send_headers("application/json")
                 try: send_chunk(canonical(body))
                 except (BrokenPipeError, ConnectionResetError): pass
@@ -312,10 +407,6 @@ class Broker:
             raise
         finally:
             conn.close()
-            if isinstance(terminal, dict):
-                tokens_in, tokens_out = terminal.get("input_tokens"), terminal.get("output_tokens")
-                if type(tokens_in) is int and type(tokens_out) is int and tokens_in >= 0 and tokens_out >= 0:
-                    self.ledger.settle(request_id, tokens_in + tokens_out)
         if terminal is None:
             control.check()
             raise Denied('Complete terminal usage was not received. The full reservation was retained; usage was not treated as zero.',code='terminal_usage_missing',status=502)
@@ -398,7 +489,10 @@ def make_server(root, ledger, port=PORT, transport=upstream):
     root = Path(root)
     token = (root / "gateway.token").read_text().strip()
     if len(token) < 40: raise Denied("Gateway credential is missing")
-    broker = Broker(root, ledger, transport)
+    if (root/'team-client.json').exists():
+        from team_client import RemoteBroker
+        broker=RemoteBroker(root)
+    else:broker = Broker(root, ledger, transport)
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -430,6 +524,8 @@ def make_server(root, ledger, port=PORT, transport=upstream):
             self.end_headers(); self.wfile.write(data)
 
         def authorized(self):
+            if len(self.headers.get_all('Host',[]))!=1 or len(self.headers.get_all('Authorization',[]))!=1:
+                raise Denied('Ambiguous gateway authentication headers.',code='gateway_auth_failed')
             host = self.headers.get("Host", "")
             if host not in {"127.0.0.1:" + str(port), "localhost:" + str(port), "host.docker.internal:" + str(port)}:
                 raise Denied("Unexpected Host header")
@@ -440,7 +536,9 @@ def make_server(root, ledger, port=PORT, transport=upstream):
             if self.path == "/health": return self.reply(200, {"service":"codex-api", "pid":os.getpid(), "service_ready":True, "paused":(root/'paused').exists()})
             try:
                 self.authorized()
+                if self.headers.get_all('Transfer-Encoding') or self.headers.get_all('Content-Encoding') or self.headers.get_all('Content-Length') not in (None,['0']):raise Denied('GET request bodies are disabled.',code='unsupported_request')
                 if self.path == '/v1/quota':
+                    if hasattr(broker,'quota'):return self.reply(200,broker.quota())
                     profile = json.loads((root/'verification.json').read_text()).get('openai', {})
                     return self.reply(200, read_quota(root/'state', profile.get('daily_token_limits', {}), now=broker.clock()))
                 if self.path != "/v1/models": raise Denied("Endpoint disabled")
@@ -453,18 +551,26 @@ def make_server(root, ledger, port=PORT, transport=upstream):
             self.expect_stream=False
             try:
                 self.authorized()
-                if self.path not in {"/v1/responses", "/v1/notices/claim", "/tools/search", "/tools/extract"}: raise Denied("Endpoint disabled")
-                if self.headers.get("Transfer-Encoding") or self.headers.get("Content-Encoding"): raise Denied("Encoded request denied")
+                if self.path not in {"/v1/responses", "/v1/notices/claim", "/v1/quota/request", "/tools/search", "/tools/extract"}: raise Denied("Endpoint disabled")
+                if self.headers.get_all("Transfer-Encoding") or self.headers.get_all("Content-Encoding") or len(self.headers.get_all('Content-Length',[]))!=1: raise Denied("Encoded or ambiguously framed request denied",code='unsupported_request')
                 length = int(self.headers.get("Content-Length", "-1"))
                 if not 0 < length <= 4_000_000: raise Denied("Request size invalid")
                 self.connection.settimeout(30)
                 payload = decode_json(self.rfile.read(length))
                 if self.path == '/v1/notices/claim':
                     if payload != {}:raise Denied('Unsupported notice request')
+                    if hasattr(broker,'notices'):return self.reply(200,broker.notices())
                     profile=json.loads((root/'verification.json').read_text()).get('openai',{})
                     if profile.get('quota_guard') is not True:raise Denied('Daily quota protection is unavailable')
                     return self.reply(200,{'notices':ledger.claim_daily_notices(profile.get('daily_token_limits',{}))})
+                if self.path == '/v1/quota/request':
+                    if not hasattr(broker,'request_more'):raise Denied('Quota requests are available only in shared mode.',code='endpoint_disabled')
+                    return self.reply(200,broker.request_more(payload))
                 self.expect_stream=isinstance(payload,dict) and payload.get('stream') is True
+                operation_keys = self.headers.get_all('Idempotency-Key', [])
+                if len(operation_keys) > 1 or operation_keys and self.path != '/v1/responses':
+                    raise Denied('Use one Idempotency-Key only on a Responses request.', code='invalid_operation_id')
+                operation_id = operation_keys[0] if operation_keys else None
                 acquired = broker.admission.acquire(blocking=False)
                 if not acquired: raise Denied("Another request is in flight; retry only after checking status")
                 if (root / "paused").exists(): raise Denied("Gateway is paused")
@@ -479,14 +585,16 @@ def make_server(root, ledger, port=PORT, transport=upstream):
                         readable,_,_=select.select([self.connection],[],[],0)
                         return bool(readable) and self.connection.recv(1,socket.MSG_PEEK)==b''
                     except OSError:return True
-                if self.path == "/v1/responses": broker.openai(payload, headers, chunk,cancelled=cancelled)
+                if self.path == "/v1/responses": broker.openai(payload, headers, chunk,cancelled=cancelled,operation_id=operation_id)
                 else: self.reply(200, broker.search(payload, extract=self.path == "/tools/extract"))
             except Denied as error:
                 self.fail(error,streaming=started)
             except (TimeoutError,socket.timeout):
                 self.fail(Denied('The API response timed out. No automatic retry was made; the full reservation was retained for dispatched requests.',code='api_timeout',status=504),streaming=started)
-            except Exception:
-                self.fail(Denied('The local configuration, ledger, or connection state is unavailable. Run codex-api status for details.',code='gateway_state_unavailable',status=503),streaming=started)
+            except Exception as error:
+                correlation_id = getattr(error, 'correlation_id', None)
+                details = {'correlation_id':correlation_id} if isinstance(correlation_id,str) and re.fullmatch(r'[0-9a-f]{32}',correlation_id) else {}
+                self.fail(Denied('The local configuration, ledger, or connection state is unavailable. Run codex-api status for details.',code='gateway_state_unavailable',status=503,details=details),streaming=started)
             finally:
                 if acquired: broker.admission.release()
 

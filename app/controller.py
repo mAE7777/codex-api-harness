@@ -30,24 +30,44 @@ def workspace_check():
 
 
 def integrity():
+    if (ROOT/'upgrade-pending.json').exists():raise Denied('An interrupted code activation is pending. Run codex-api upgrade recover; no session was started.',code='upgrade_recovery_required')
     manifest = json.loads((ROOT / "installation.json").read_text())
+    if manifest.get('layout_version')==2:
+        from releases import validate_layout, active_payload
+        validate_layout(ROOT)
+        if Path(__file__).resolve().parent.parent != active_payload(ROOT):
+            raise Denied('The installed code generation changed before this operation. Run the command again.',code='upgrade_recovery_required')
+    native_policy=None
     for relative, expected in manifest["files"].items():
         path = ROOT / relative
-        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        if path.is_symlink() or not path.is_file():
             raise Denied("Installed file changed: " + relative)
+        data=path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != expected:raise Denied("Installed file changed: " + relative)
+        if relative=='kit/requirements.toml':native_policy=data
     if manifest.get('external_sbx_sha256') and hashlib.sha256(SBX.read_bytes()).hexdigest()!=manifest['external_sbx_sha256']:
         raise Denied('The pinned Docker Sandboxes executable changed; review the runtime update before starting.')
+    from extensions import verify_build
+    verify_build(ROOT)
+    from workspace_policy import validate_managed_requirements, protected_paths
+    if native_policy is None:raise Denied('The native filesystem policy is missing from the integrity manifest.',code='protected_paths_invalid')
+    validate_managed_requirements(native_policy,WORKSPACE,protected_paths(ROOT))
     return manifest
 
 
 def blockers():
     issues = []
+    if (ROOT/'team').exists() and not (ROOT/'team-client.json').exists():issues.append('This installation owns a shared coordinator. Start a separate joined client instead of an independent personal gateway.')
     try: integrity()
     except Exception: issues.append("Installation integrity has not been verified")
     try: workspace_check()
     except Denied as error: issues.append(str(error))
-    try: credentials(ROOT / "openai-key.env")["OPENAI_API_KEY"]
-    except Exception: issues.append("The restricted OpenAI API key for this installation has not been configured")
+    try:
+        if (ROOT/'team-client.json').exists():
+            from team_client import RemoteBroker
+            RemoteBroker(ROOT)
+        else: credentials(ROOT / "openai-key.env")["OPENAI_API_KEY"]
+    except Exception: issues.append("The private team connection is invalid" if (ROOT/'team-client.json').exists() else "The restricted OpenAI API key for this installation has not been configured")
     try:
         ready = json.loads((ROOT / "readiness.json").read_text())
         policy = json.loads((ROOT / "verification.json").read_text()).get("openai", {}).get("billing_policy", "free_only")
@@ -118,6 +138,9 @@ def stop():
 
 
 def quota_snapshot():
+    if (ROOT/'team-client.json').exists():
+        from team_client import RemoteBroker
+        return RemoteBroker(ROOT).quota()
     profile = json.loads((ROOT/'verification.json').read_text()).get('openai', {})
     if profile.get('quota_guard') is not True:
         raise Denied('Daily quota protection is not enabled; run codex-api doctor.', code='quota_state_unavailable')
@@ -134,7 +157,7 @@ def runtime_state():
         identity = process_identity(record['pid'])
         if identity is None: return 'stale'
         if identity != record['identity'] or 'gateway' not in identity: return 'foreign_process'
-        client = http.client.HTTPConnection('127.0.0.1', 49187, timeout=.4)
+        client = http.client.HTTPConnection('127.0.0.1', PORT, timeout=.4)
         try:
             client.request('GET', '/health')
             response = client.getresponse()
@@ -191,7 +214,10 @@ def doctor(as_json=False, bundle=False):
             checks.append({'check':name, 'status':'FAIL', 'code':code})
     check('Installation integrity', integrity, 'integrity_failed')
     check('Workspace policy', workspace_check, 'workspace_policy_failed')
-    check('Dedicated API key file', lambda: bool(credentials(ROOT/'openai-key.env').get('OPENAI_API_KEY')), 'invalid_api_key')
+    if (ROOT/'team-client.json').exists():
+        from team_client import RemoteBroker
+        check('Private team connection', lambda:RemoteBroker(ROOT).quota(), 'team_unavailable')
+    else:check('Dedicated API key file', lambda: bool(credentials(ROOT/'openai-key.env').get('OPENAI_API_KEY')), 'invalid_api_key')
     check('Quota ledger and limits', quota_snapshot, 'quota_state_unavailable')
     check('Subscription configuration unchanged', subscription_unchanged, 'subscription_config_changed')
     mode = runtime_state()
@@ -199,7 +225,7 @@ def doctor(as_json=False, bundle=False):
     ready = json.loads((ROOT/'readiness.json').read_text()) if (ROOT/'readiness.json').is_file() else {}
     checks.append({'check':'Saved isolation acceptance', 'status':'PASS' if all(ready.get(k) is True for k in ('filesystem_tested','network_tested','host_integrations_absent')) else 'FAIL', 'scope':'saved test results; not a live sandbox penetration test'})
     verification = json.loads((ROOT/'verification.json').read_text()).get('openai', {})
-    checks.append({'check':'Provider free eligibility', 'status':'PASS' if all(verification.get(k) is True for k in ('count_endpoint_free_confirmed','local_tool_inference_free_confirmed')) else 'WARN', 'code':'free_eligibility_unconfirmed'})
+    if not (ROOT/'team-client.json').exists():checks.append({'check':'Provider free eligibility', 'status':'PASS' if all(verification.get(k) is True for k in ('count_endpoint_free_confirmed','local_tool_inference_free_confirmed')) else 'WARN', 'code':'free_eligibility_unconfirmed'})
     try:
         quota = quota_snapshot()
         if quota['unresolved_requests']: checks.append({'check':'Unconfirmed usage', 'status':'WARN', 'code':'quota_reconciliation_required', 'count':quota['unresolved_requests']})
@@ -227,7 +253,9 @@ def explain(code=None, as_json=False):
                   'host_credentials':'not mounted; real API keys stay on host', 'network':'local gateway; GET/HEAD only on registry.npmjs.org:443, pypi.org:443, files.pythonhosted.org:443',
                   'managed_hooks':'fixed local quota notices only; user, project and plugin hooks are skipped',
                   'sensitive_files':'native process-start read masks plus host checks before each model request; no project copy',
-                  'disabled':['OpenAI hosted tools','media generation','audio','subscription login','host plugins and skills'],
+                  'disabled':['OpenAI hosted tools','media generation','audio','subscription login','unreviewed host plugins and skills'],
+                  'extensions':'reviewed immutable skill snapshots; native plugins, MCP and plugin hooks stay disabled',
+                  'shared_mode':'optional authoritative coordinator over host-side SSH; no local fallback',
                   'preferences':'allowlisted private model, reasoning, and UI choices only'}
     else:
         if code is None:
@@ -267,7 +295,7 @@ def _start(agent_args=()):
     child=None
     try:
         (ROOT / "paused").unlink(missing_ok=True)
-        code = "import sys;sys.path.insert(0," + repr(str(ROOT / "app")) + ");from gateway import serve;serve()"
+        code = "import sys;sys.path.insert(0," + repr(str((ROOT / "app").resolve())) + ");from gateway import serve;serve()"
         with (ROOT / "gateway.log").open("ab") as log:
             child = subprocess.Popen([sys.executable, "-I", "-c", code], env=clean_env(), stdout=log, stderr=log, start_new_session=True)
         time.sleep(0.3)
@@ -295,7 +323,8 @@ def _start(agent_args=()):
                 (ROOT/'paused').touch(mode=0o600,exist_ok=True)
                 if child is not None and child.poll() is None:
                     child.terminate();child.wait(timeout=5)
-        finally:signal.signal(signal.SIGINT,previous)
+        finally:
+            signal.signal(signal.SIGINT,previous)
     if sys.stdout.isatty() and not any(a in agent_args for a in ('exec','--help','-h','--version','-V')):
         print('API session closed. Resume this isolated environment with: codex-api resume --last',flush=True)
 
@@ -353,11 +382,13 @@ def retire():
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["status", "usage", "doctor", "explain", "reconcile", "help", "start", "pause", "stop", "login", "prepare", "reset", "retire", "configure", "credentials", "billing"])
+    parser.add_argument("command", choices=["status", "usage", "doctor", "explain", "reconcile", "help", "start", "pause", "stop", "login", "prepare", "reset", "retire", "configure", "credentials", "billing", "team", "extensions", "protect", "upgrade"])
     parser.add_argument("agent_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    if args.agent_args and args.command not in {'start','doctor','explain','reconcile','configure','prepare','billing'} and not (args.command in {'status','usage'} and args.agent_args==['--json']): parser.error("This maintenance command does not accept these arguments")
+    if args.agent_args and args.command not in {'start','doctor','explain','reconcile','configure','prepare','billing','credentials','team','extensions','protect','upgrade'} and not (args.command in {'status','usage'} and args.agent_args==['--json']): parser.error("This maintenance command does not accept these arguments")
     try:
+        if (ROOT/'upgrade-pending.json').exists() and args.command not in {'upgrade','status','usage','doctor','explain','stop','pause','help'}:
+            raise Denied('Complete codex-api upgrade recover before changing this installation.',code='upgrade_recovery_required')
         if args.command in {'status','usage'}: status(as_json=args.agent_args==['--json'],usage_only=args.command=='usage')
         elif args.command=='doctor':
             if len(args.agent_args)!=len(set(args.agent_args)) or set(args.agent_args)-{'--json','--bundle'}: parser.error('doctor accepts --json and --bundle')
@@ -373,8 +404,47 @@ def main():
             from onboarding import command
             command(ROOT,args.agent_args)
         elif args.command=='credentials':
-            from onboarding import credentials_location
-            credentials_location(ROOT)
+            if args.agent_args:
+                from maintenance import rotation
+                rotation(ROOT,args.agent_args)
+            else:
+                from onboarding import credentials_location
+                credentials_location(ROOT)
+        elif args.command=='team':
+            if args.agent_args[:1]==['join']:
+                from team_client import command
+                command(ROOT,args.agent_args[1:])
+            elif args.agent_args==['keygen']:
+                from team_client import keygen
+                keygen(ROOT)
+            elif args.agent_args[:1]==['request']:
+                request_parser=argparse.ArgumentParser(prog='codex-api team request')
+                request_parser.add_argument('--group',choices=['A','B'],required=True)
+                request_parser.add_argument('--tokens',type=int,required=True)
+                request=request_parser.parse_args(args.agent_args[1:])
+                from team_client import RemoteBroker
+                import uuid
+                result=RemoteBroker(ROOT).request_more({'group':request.group,'amount':request.tokens,'request_id':uuid.uuid4().hex})
+                print('Quota request '+result['request_id']+': '+result['state']+'. The owner can review it with codex-api team requests.')
+            else:
+                from shared import command
+                command(ROOT,args.agent_args)
+        elif args.command=='extensions':
+            from extensions import command
+            result=command(ROOT,args.agent_args)
+            if isinstance(result,dict) and result.get('changed'):prepare()
+        elif args.command=='protect':
+            from maintenance import protect
+            if protect(ROOT,args.agent_args):prepare()
+        elif args.command=='upgrade':
+            from releases import command
+            result=command(ROOT,args.agent_args)
+            # Invoke the active generation in a new process, never keep executing
+            # the previously imported code after a pointer switch.
+            if isinstance(result,dict) and result.get('native_prepare_required'):
+                wrapper=ROOT/'bin/codex-api'
+                completed=subprocess.run([str(wrapper),'prepare'],env=clean_env())
+                return completed.returncode
         elif args.command=='billing':
             from onboarding import billing
             billing(ROOT,args.agent_args)
