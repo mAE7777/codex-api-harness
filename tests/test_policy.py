@@ -248,9 +248,12 @@ class PolicyInstallTests(unittest.TestCase):
         (home/'preferences.json').write_text(json.dumps({'model':'gpt-6.1-sol','model_reasoning_effort':'high'}))
         with patch.object(preferences,'model_policy',return_value=p):
             overrides=preferences.validate_cli_args(['-m','owner-reviewed-model-1'])
-            selected,config=preferences.prepare(home,self.root/'kit/config.toml',self.root/'kit/extensions',return_policy=True,cli_preferences=overrides)
+            _,saved=preferences.prepare(home,self.root/'kit/config.toml',self.root/'kit/extensions',return_policy=True)
+            original=(home/'preferences.json').read_bytes()
+            config=preferences.cli_policy(saved,overrides)
             self.assertEqual(config['model'],'owner-reviewed-model-1');self.assertEqual(config['model_reasoning_effort'],'none')
-            with self.assertRaises(preferences.PolicyArgumentError):preferences.prepare(home,self.root/'kit/config.toml',self.root/'kit/extensions',cli_preferences={'model_reasoning_effort':'high'})
+            self.assertEqual((home/'preferences.json').read_bytes(),original)
+            with self.assertRaises(preferences.PolicyArgumentError):preferences.cli_policy(config,{'model_reasoning_effort':'high'})
 
 
 class TierTransportTests(unittest.TestCase):

@@ -4,7 +4,7 @@ Release 0.3.0, checked 2026-10-22. Supported integration target: macOS Apple Sil
 
 | Check | Scope |
 | --- | --- |
-| Portable regression | 382 tests; fake providers and loopback only |
+| Portable regression | 383 tests; fake providers and loopback only |
 | Account-specific policy | Empty new installs; one or three pools; owner-reviewed model IDs; limits above the old reference caps; margin and warning validation |
 | Unified validation | Model, reasoning, context/output cap and tier checked together; catalog/defaults/guest contract agree; unknown fields, tiers and mismatched capabilities rejected |
 | Native speed tiers | Actual pinned CLI completed local tool calls through the gateway with Standard, Fast, Flex and Ultrafast using one selected model and a fake provider; selected wire tier checked |

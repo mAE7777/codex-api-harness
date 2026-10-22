@@ -23,7 +23,7 @@ A policy has these fields:
 - `models`: 1–32 approved model IDs. Each declares its `pool`, `context_window`, `max_output_tokens`, supported `reasoning_efforts`, supported `service_tiers`, and official capability `reference` URL. Every pool must have a model. Metadata must be verified for Responses API and the local tool protocol; a `/models` listing alone proves neither. Additional owner-reviewed model IDs do not require editing Python source.
 - `defaults`: selected `model`, compatible `reasoning_effort`, `service_tier`, `output_token_cap`, and `request_deadline_seconds` (30–900). The output reservation cap must fit every selected model. The template suggests 16,384; choose a smaller value when appropriate.
 
-Saved model/reasoning choices are retained when compatible. A model switch uses a supported reasoning default when the old preference no longer fits; an explicitly incompatible override is rejected before launch.
+Saved model/reasoning choices are retained when compatible. A model switch uses a supported reasoning default when the old preference no longer fits; an explicitly incompatible override is rejected before launch. Command-line model/reasoning overrides affect that run only; native UI preferences remain saved separately.
 
 The template is readable JSON. All fields are validated; unknown fields, duplicate JSON keys, unsafe files, booleans/fractions in integer fields, unsupported periods, unknown tiers and incompatible model/default combinations fail closed. Policy files must be owner-only ordinary files (0600). No project configuration or skill may widen the contract.
 

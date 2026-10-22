@@ -68,6 +68,20 @@ class PreferenceTests(unittest.TestCase):
         self.assertFalse((self.home/'preferences.json').stat().st_mode & 0o077)
         self.assertNotIn('model_providers',(self.home/'preferences.json').read_text())
 
+    def test_one_run_model_override_cannot_overwrite_saved_preferences(self):
+        import os
+        (self.home/'preferences.json').write_text(json.dumps({'model':'gpt-5.6-terra','model_reasoning_effort':'high'}))
+        preferences.prepare(self.home,self.base)
+        before=json.loads((self.home/'preferences.json').read_text())
+        binary=Path(self.temp.name)/'bin';binary.mkdir();stub=binary/'codex'
+        stub.write_text('#!/bin/sh\nexit 0\n');stub.chmod(0o700)
+        real_prepare=preferences.prepare
+        def prepare(home,**kwargs):return real_prepare(home,self.base,Path(self.temp.name)/'absent-extensions',**kwargs)
+        with patch.object(preferences,'api_home',return_value=self.home),patch.object(preferences,'prepare',side_effect=prepare),patch.dict(os.environ,{'PATH':str(binary)+os.pathsep+os.environ.get('PATH','')}):
+            self.assertEqual(preferences.run(['-m','gpt-6.1-sol','-c','model_reasoning_effort=low']),0)
+        self.assertEqual(json.loads((self.home/'preferences.json').read_text()),before)
+        self.assertEqual(preferences.read_config(self.home/'config.toml')['model'],'gpt-5.6-terra')
+
 
 class DailyFixture(unittest.TestCase):
     setUp=fixtures.GuardTests.setUp

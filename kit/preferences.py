@@ -220,7 +220,7 @@ def protected_cli_args(config):
     return result
 
 
-def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=Path('/etc/codex-api/extensions'), *, return_policy=False, cli_preferences=None):
+def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=Path('/etc/codex-api/extensions'), *, return_policy=False):
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     pref_path = home/'preferences.json'
     prefs = {}
@@ -230,11 +230,8 @@ def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=
     # Native Codex writes /model and /statusline choices to its private config.
     # Only the preference allowlist is carried into the next protected config.
     prefs.update(select_preferences(read_config(home/'config.toml')))
-    p=model_policy();overrides=cli_preferences or {}
-    selected=overrides.get('model',prefs.get('model',p['defaults']['model']))
-    if 'model_reasoning_effort' in overrides and overrides['model_reasoning_effort'] not in p['models'][selected]['reasoning_efforts']:raise PolicyArgumentError('This reasoning effort is unsupported by the selected model.')
-    if overrides.get('tui'):prefs['tui']={**prefs.get('tui',{}),**overrides['tui']}
-    prefs.update({k:v for k,v in overrides.items() if k!='tui'});prefs=select_preferences(prefs)
+    p=model_policy();selected=prefs.get('model',p['defaults']['model'])
+    prefs=select_preferences(prefs)
     if selected!=p['defaults']['model'] and 'model_reasoning_effort' not in prefs and p['defaults']['reasoning_effort'] not in p['models'][selected]['reasoning_efforts']:
         prefs['model_reasoning_effort']=p['models'][selected]['reasoning_efforts'][0]
     base = base_path.read_text()
@@ -265,11 +262,30 @@ def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=
     return (prefs,tomllib.loads(rendered)) if return_policy else prefs
 
 
+def cli_policy(config,overrides):
+    """Temporary CLI choices never rewrite the owner's saved preferences."""
+    import copy
+    result=copy.deepcopy(config);p=model_policy()
+    selected=overrides.get('model',result['model'])
+    efforts=p['models'][selected]['reasoning_efforts']
+    if 'model_reasoning_effort' in overrides and overrides['model_reasoning_effort'] not in efforts:raise PolicyArgumentError('This reasoning effort is unsupported by the selected model.')
+    if overrides.get('tui'):result['tui']={**result.get('tui',{}),**overrides['tui']}
+    result.update({k:v for k,v in overrides.items() if k!='tui'})
+    if result.get('model_reasoning_effort') not in efforts:result['model_reasoning_effort']=efforts[0]
+    return result
+
+
+def api_home():
+    home=Path(os.environ['CODEX_HOME'])
+    if str(home)!='/home/agent/.codex-api':raise ValueError('Unexpected API Codex home')
+    return home
+
+
 def run(args):
-    home = Path(os.environ['CODEX_HOME'])
-    if str(home) != '/home/agent/.codex-api': raise ValueError('Unexpected API Codex home')
+    home=api_home()
     overrides=validate_cli_args(args)
-    _,policy=prepare(home,return_policy=True,cli_preferences=overrides)
+    _,policy=prepare(home,return_policy=True)
+    policy=cli_policy(policy,overrides)
     child = None
     previous = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, lambda *_: None)
