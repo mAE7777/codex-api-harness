@@ -18,7 +18,25 @@ Other keys, Playground, and direct API calls cannot be measured prospectively by
 the harness. Organization administrators can bypass the coordinator using other
 credentials; this software cannot prevent that.
 
-## Initialize once
+## Choose one policy
+
+Before initialization, follow [CONFIGURATION.md](CONFIGURATION.md) to select the organization's actual models, daily pools, margins and one service tier. Apply the reviewed private policy on a stopped coordinator installation. Do not ask a joining member to supply an OpenAI key or invent an independent budget. The coordinator policy is pinned after initialization in this release; allocation changes remain supported.
+
+For a single pool named Daily, use:
+
+```sh
+codex-api team init --organization ORG_ID --baseline Daily=TOKENS_ALREADY_USED --all-traffic-coordinated
+codex-api team member add owner --project OWNER_PROJECT_ID --tokens Daily=OWNER_ALLOCATION
+codex-api team member add friend --project FRIEND_PROJECT_ID --tokens Daily=FRIEND_ALLOCATION
+```
+
+Repeat `--baseline POOL=N` and `--tokens POOL=N` for every configured pool. The same named-pool arguments apply to `transfer`, `defaults` and `project-limit`. Models, tier, output cap and organization ceiling are authoritative at the coordinator. Invitations include the policy and digest; the client verifies both before forwarding.
+
+A member first runs `codex-api team join --invite FILE --inspect`, reviews the sanitized policy, and adds `--reviewed-policy-digest SHA256` to the join command. Apply this to local owner clients and credential renewal too. The invitation itself contains a private bearer token: never print or commit it. Older invitations remain compatible with the legacy profile only.
+
+## Initialize once — legacy A/B examples
+
+The remaining A/B command examples deliberately select the optional legacy-five policy. Replace them with named-pool arguments for your own policy. They are not factory defaults or account entitlement evidence.
 
 Use the account's organization ID and the organization's actual tokens already
 consumed today in each approved model group. A zero baseline is appropriate only
@@ -32,9 +50,7 @@ codex-api team init --organization ORG_ID \
 ```
 
 This creates private `team/` state beneath the harness installation. Repeating
-initialization cannot reset it. The organization limits retain the reference
-5% safety margin: A 237,500 and B 2,375,000 tokens per UTC day. These starter
-limits do not prove account-specific complimentary eligibility.
+initialization cannot reset it. For the legacy-five policy, usable organization limits are A 237,500 and B 2,375,000 tokens per UTC day after the reference 5% margin. Other policies use their own effective ceilings. These numbers do not prove complimentary eligibility.
 
 Initialization requires the local API session and its gateway to be stopped.
 An installation containing a coordinator cannot continue using an independent
@@ -210,7 +226,7 @@ Backups are sensitive and cannot be used to create a second active coordinator.
 ## Accounting boundaries
 
 - One exact-count-and-reserve sequence precedes inference. Organization,
-  project, and member admission share one durable transaction. All five models,
+  project, and member admission share one durable transaction. All owner-approved models,
   disabled paid hosted tools, supported local tools, and output caps retain the
   normal policy.
 - An interrupted, timed-out, rejected, or missing-terminal response is not
@@ -219,7 +235,7 @@ Backups are sensitive and cannot be used to create a second active coordinator.
 - A UTC change before dispatch prevents that dispatch. A late terminal
   settlement is conservatively counted in the day it becomes known as well.
   Changing the clock or usage exceeding the reservation stops admissions.
-- Confirmed usage from requests admitted in the last 615 seconds before
+- Confirmed usage from requests admitted in the last configured request-deadline-plus-15 seconds before
   midnight also constrains the next day, including member and project limits.
   New admissions pause until 00:00:15 UTC. The exact-count response must prove
   a GMT clock reference within six seconds of the coordinator clock before

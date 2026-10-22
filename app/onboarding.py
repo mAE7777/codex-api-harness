@@ -8,7 +8,9 @@ from pathlib import Path
 import re
 import sys
 
-from guard import Denied, Ledger, DAILY_LIMITS, atomic_json
+from guard import Denied, Ledger, atomic_json
+from policy import legacy, limits, digest, PolicyError
+from configuration import candidate, baselines, refresh_guest
 
 
 def configure(root, args):
@@ -16,14 +18,25 @@ def configure(root, args):
     parser.add_argument('--organization', required=True)
     parser.add_argument('--project', required=True)
     parser.add_argument('--exclusive-organization', action='store_true')
-    parser.add_argument('--baseline-a', type=int, required=True)
-    parser.add_argument('--baseline-b', type=int, required=True)
+    parser.add_argument('--baseline-a', type=int)
+    parser.add_argument('--baseline-b', type=int)
+    parser.add_argument('--policy',type=Path)
+    parser.add_argument('--reviewed-policy-digest')
+    parser.add_argument('--baseline',action='append',default=[])
     parser.add_argument('--allow-api-charges', action='store_true')
     parsed = parser.parse_args(args)
     if not re.fullmatch(r'org-[A-Za-z0-9_-]{4,100}', parsed.organization) or not re.fullmatch(r'proj_[A-Za-z0-9_-]{4,100}', parsed.project):
         raise Denied('Use the organization and project IDs from your API account settings.')
-    if any(v < 0 or v > DAILY_LIMITS[g] for g, v in [('A', parsed.baseline_a), ('B', parsed.baseline_b)]):
-        raise Denied('Prior usage must fit the configured daily limits. Wait for the next UTC day if the pool is already exhausted.')
+    if parsed.policy:
+        if parsed.baseline_a is not None or parsed.baseline_b is not None:raise Denied('Use named --baseline POOL=TOKENS with a custom policy.')
+        p=candidate(parsed.policy,parsed.reviewed_policy_digest)
+        prior=baselines(parsed.baseline,p)
+    else:
+        # Legacy flags explicitly opt in to the previous five-model preset.
+        if parsed.baseline_a is None or parsed.baseline_b is None or parsed.baseline:raise Denied('Choose an account-specific --policy and a baseline for each pool. The --baseline-a/--baseline-b pair explicitly selects the legacy-five preset.')
+        p=legacy();prior={'A':parsed.baseline_a,'B':parsed.baseline_b}
+        if any(type(v) is not int or not 0<=v<=limits(p)[g] for g,v in prior.items()):raise Denied('Prior usage must fit the configured daily limits.')
+    ceilings=limits(p)
     from gateway import credentials
     if not credentials(root/'openai-key.env').get('OPENAI_API_KEY'):
         raise Denied('Fill the private OpenAI key file first. Never paste the key into chat.')
@@ -44,24 +57,25 @@ def configure(root, args):
             # Resume an interrupted first configuration only when its saved
             # baselines are identical. Existing budgets are never replaced.
             with ledger.transaction():
-                for group, baseline in [('A', parsed.baseline_a), ('B', parsed.baseline_b)]:
+                for group, baseline in prior.items():
                     row=ledger.db.execute('SELECT ceiling,baseline FROM budgets WHERE scope=? AND period=?',('openai:'+group,day)).fetchone()
                     if row is None:
-                        ledger.db.execute('INSERT INTO budgets VALUES (?,?,?,?)',('openai:'+group,day,DAILY_LIMITS[group],baseline))
-                    elif row!=(DAILY_LIMITS[group],baseline):
+                        ledger.db.execute('INSERT INTO budgets VALUES (?,?,?,?)',('openai:'+group,day,ceilings[group],baseline))
+                    elif row!=(ceilings[group],baseline):
                         raise Denied('An existing initial budget differs. No baseline was overwritten.')
             policy = 'metered' if parsed.allow_api_charges else 'free_only'
             old.update(account_configured=True, enabled=True, verified=False,
                        billing_policy=policy, project_id=parsed.project,
                        organization_id=parsed.organization, quota_guard=True,
                        org_exclusive=parsed.exclusive_organization,
-                       daily_token_limits=dict(DAILY_LIMITS), output_token_cap=16384,
+                       policy=p,
                        count_endpoint_free_confirmed=False,
                        local_tool_inference_free_confirmed=False)
             verification['openai'] = old
             atomic_json(root/'verification.json', verification)
         finally: ledger.close()
-    print('Account configured. Daily reservations and the 5% margin remain enabled.')
+    refresh_guest(root)
+    print('Account configured. Daily reservations and the selected safety margin are enabled.')
     if not parsed.exclusive_organization:
         print('Model requests remain blocked: other organization callers are not accounted for.')
     elif not parsed.allow_api_charges:
@@ -96,6 +110,6 @@ def billing(root,args):
 
 def command(root, args):
     if not args or args == ['--help']:
-        print('codex-api credentials\ncodex-api configure --organization ORG_ID --project PROJECT_ID --exclusive-organization --baseline-a TOKENS --baseline-b TOKENS [--allow-api-charges]')
+        print('codex-api credentials\ncodex-api policy template; codex-api policy check FILE\ncodex-api configure --organization ORG_ID --project PROJECT_ID --policy FILE --reviewed-policy-digest SHA256 --exclusive-organization --baseline POOL=TOKENS [--allow-api-charges]')
         return
     configure(root, args)

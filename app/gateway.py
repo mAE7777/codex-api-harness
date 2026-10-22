@@ -19,7 +19,8 @@ import threading
 import time
 import urllib.parse
 
-from guard import Denied, Ledger, MODELS, DAILY_LIMITS, atomic_json, canonical, normalize, read_quota, utc_admission
+from guard import Denied, Ledger, atomic_json, canonical, normalize, read_quota, utc_admission
+from policy import load as load_policy, from_receipt, limits as policy_limits, model_pools, PolicyError
 from transport_control import RequestControl
 from workspace_policy import check_workspace
 
@@ -71,7 +72,7 @@ def upstream(host, path, body, headers, method="POST", *, control=None, phase='p
         if control: control.check()
         connection.request(method, path, body=encoded, headers={"Content-Type":"application/json", **headers})
         connection._api_socket = connection.sock
-        if connection.sock is not None: connection.sock.settimeout(30 if phase == 'input_count' else 120)
+        if connection.sock is not None: connection.sock.settimeout(30 if phase == 'input_count' else max(120,control.phase_timeout) if control else 120)
         if control: control.check()
         return connection, connection.getresponse()
     except Denied:
@@ -126,9 +127,9 @@ def public_error(error):
     code=getattr(error,'code',None)
     if not code:
         mapping=[
-            ('Model is not one', 'model_not_allowed','Only the five approved models are allowed. Select one with /model.'),
+            ('Model is not one', 'model_not_allowed','Select an owner-approved model with /model.'),
             ('Hosted or unreviewed tool','tool_disabled','This hosted or unreviewed tool is disabled. Use an approved local tool instead.'),
-            ('Paid service tier','service_tier_disabled','Fast, Flex, and Ultrafast service tiers are disabled. Use the standard tier.'),
+            ('Paid service tier','service_tier_disabled','Use the service tier selected in the owner policy.'),
             ('External file, URL, audio','input_type_disabled','This external file, URL, or audio input is disabled.'),
             ('Endpoint disabled','endpoint_disabled','This endpoint or feature is disabled. Changing the request URL will not enable it.'),
             ('Gateway is paused','gateway_stopped','The API environment is stopping. Run codex-api again to start it.'),
@@ -198,6 +199,10 @@ class Broker:
         self.admission = threading.Lock()
         self.workspace_guard = check_workspace if self.root == ROOT else lambda: None
 
+    def policy(self, receipt=None):
+        try:return from_receipt(receipt) if receipt is not None else load_policy(self.root)
+        except (PolicyError,OSError,ValueError) as error:raise Denied('The owner policy cannot be verified: '+str(error),code='policy_invalid') from None
+
     def receipt(self, provider):
         if (self.root / "paused").exists(): raise Denied("Gateway is paused")
         if provider=='openai' and (self.root/'team').exists():
@@ -236,7 +241,9 @@ class Broker:
 
     def openai(self, payload, send_headers, send_chunk, cancelled=lambda:False, *, operation_id=None, operation_namespace='local'):
         operation = {}
-        with RequestControl(cancelled, lambda:(self.root/'paused').exists()) as control:
+        p=self.policy()
+        self.ledger.overlap_seconds=p['defaults']['request_deadline_seconds']+15
+        with RequestControl(cancelled, lambda:(self.root/'paused').exists() or (self.root/'policy-pending.json').exists(),total=p['defaults']['request_deadline_seconds']) as control:
             try:
                 result = self._openai(payload, send_headers, send_chunk, control, operation, operation_id, operation_namespace)
                 if operation: self.ledger.mark_operation(operation['id'], 'completed')
@@ -264,9 +271,11 @@ class Broker:
         if (self.ledger.root/'safety-stop.json').exists():
             raise Denied('Recorded token usage needs reconciliation. No counting or model request was sent; run codex-api reconcile.',code='quota_reconciliation_required')
         daily=receipt.get('quota_guard') is True
-        cap=receipt.get('output_token_cap',4096) if daily else 4096
-        if type(cap) is not int or not 1<=cap<=16384: raise Denied('Invalid configured output cap')
-        normalized = normalize(payload,output_cap=cap)
+        p=self.policy(receipt)
+        cap=p['defaults']['output_token_cap'] if daily else min(4096,p['defaults']['output_token_cap'])
+        normalized = normalize(payload,output_cap=cap,policy=p)
+        if receipt.get('billing_policy')!='metered' and p['defaults']['service_tier']!='default':
+            raise Denied('Free-only mode does not establish complimentary eligibility for this service tier. No request was sent.',code='free_eligibility_unconfirmed')
         utc_admission(self.clock())
         operation['id'] = self.ledger.begin_operation(normalized, operation_id, namespace=operation_namespace)
         key = credentials(getattr(self,'key_path',self.root / "openai-key.env"))["OPENAI_API_KEY"]
@@ -275,12 +284,11 @@ class Broker:
         if daily:
             if receipt.get('org_exclusive') is not True:
                 raise Denied('The organization has calls outside this gateway. Remaining shared quota cannot be determined safely.',code='organization_usage_unknown')
-            group=MODELS[normalized['model']]
-            ceiling=receipt.get('daily_token_limits',{}).get(group)
-            if type(ceiling) is not int or not 1<=ceiling<=DAILY_LIMITS[group]: raise Denied('Invalid configured daily limit')
+            group=model_pools(p)[normalized['model']]
+            ceiling=policy_limits(p)[group]
             info=self.ledger.daily_remaining(group,ceiling)
             if info['remaining'] < normalized['max_output_tokens']:
-                raise Denied(f"Group {group} has {info['remaining']:,} tokens remaining, which cannot cover this output reservation. No counting or model request was sent. Use /model to select the other group or wait until 00:00 UTC.",code='daily_token_limit',status=429,details=info)
+                raise Denied(f"Group {group} has {info['remaining']:,} tokens remaining, which cannot cover this output reservation. No counting or model request was sent. Choose an allowed model with sufficient quota or wait until 00:00 UTC.",code='daily_token_limit',status=429,details=info)
             count_fields={k:v for k,v in normalized.items() if k in {'model','input','instructions','tools','tool_choice','parallel_tool_calls','reasoning','text','truncation'}}
             self.ledger.mark_operation(operation['id'], 'counting')
             utc_admission(self.clock())
@@ -291,6 +299,7 @@ class Broker:
             finally: conn.close()
             if type(count) is not int or count<0: raise Denied('Exact input token counting failed. No model request was sent.',code='input_count_unavailable')
             control.check()
+            if count+normalized['max_output_tokens']>p['models'][normalized['model']]['context_window']:raise Denied('The counted input plus output reservation exceeds the approved model context window. Start a new conversation or compact it; no model request was sent.',code='context_length_exceeded')
             request_id=self.ledger.reserve_daily(group,ceiling,count+normalized['max_output_tokens'],normalized)
         elif metered:
             # Do not call a separate counting endpoint or assert unverified free eligibility.
@@ -307,7 +316,7 @@ class Broker:
             if type(count) is not int or count < 0: raise Denied("Exact input count is unavailable")
             now = self.ledger.check_clock()
             period = now.strftime("%Y-%m-%d")
-            group = MODELS[normalized["model"]]
+            group = model_pools(p)[normalized["model"]]
             request_id = self.ledger.reserve("openai:" + group, period, count + normalized["max_output_tokens"], normalized)
         self.ledger.mark_operation(operation['id'], 'reserved', request_id=request_id)
         try:
@@ -321,7 +330,8 @@ class Broker:
         except Exception:
             if daily:self.ledger.void_unsent(request_id)
             raise
-        conn, response = request('/v1/responses', normalized, headers, 'response_headers', 120)
+        phase_timeout=900 if p['defaults']['service_tier']=='flex' else 120
+        conn, response = request('/v1/responses', normalized, headers, 'response_headers', phase_timeout)
         terminal = None
         disconnected = False
         def accept_terminal(candidate, *, settle=True):
@@ -349,7 +359,7 @@ class Broker:
                 send_headers("text/event-stream")
                 event_data, event_lines, event_size, total_size = [], [], 0, 0
                 terminal_chunks=[]
-                control.begin('response_stream', 120)
+                control.begin('response_stream', phase_timeout)
                 while True:
                     control.check()
                     line = response.readline(1_000_001)
@@ -540,9 +550,9 @@ def make_server(root, ledger, port=PORT, transport=upstream):
                 if self.path == '/v1/quota':
                     if hasattr(broker,'quota'):return self.reply(200,broker.quota())
                     profile = json.loads((root/'verification.json').read_text()).get('openai', {})
-                    return self.reply(200, read_quota(root/'state', profile.get('daily_token_limits', {}), now=broker.clock()))
+                    return self.reply(200, read_quota(root/'state', policy_limits(broker.policy(profile)), now=broker.clock(),policy=broker.policy(profile)))
                 if self.path != "/v1/models": raise Denied("Endpoint disabled")
-                self.reply(200, {"object": "list", "data": [{"id": name, "object": "model"} for name in MODELS]})
+                self.reply(200, {"object": "list", "data": [{"id": name, "object": "model"} for name in broker.policy()['models']]})
             except Denied as error: self.fail(error)
 
         def do_POST(self):
@@ -562,7 +572,7 @@ def make_server(root, ledger, port=PORT, transport=upstream):
                     if hasattr(broker,'notices'):return self.reply(200,broker.notices())
                     profile=json.loads((root/'verification.json').read_text()).get('openai',{})
                     if profile.get('quota_guard') is not True:raise Denied('Daily quota protection is unavailable')
-                    return self.reply(200,{'notices':ledger.claim_daily_notices(profile.get('daily_token_limits',{}))})
+                    return self.reply(200,{'notices':ledger.claim_daily_notices(policy_limits(broker.policy(profile)),warning_percent=broker.policy(profile)['warning_percent'])})
                 if self.path == '/v1/quota/request':
                     if not hasattr(broker,'request_more'):raise Denied('Quota requests are available only in shared mode.',code='endpoint_disabled')
                     return self.reply(200,broker.request_more(payload))

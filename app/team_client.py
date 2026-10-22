@@ -24,7 +24,8 @@ import tempfile
 import time
 import uuid
 
-from guard import DAILY_LIMITS, MODELS, POOL_LABELS, Denied, atomic_json, canonical, normalize
+from guard import Denied, atomic_json, canonical, normalize
+from policy import load as load_policy, validate as validate_policy, digest as policy_digest, limits as policy_limits, usage_lines, PolicyError, legacy
 from transport_control import RequestControl
 
 
@@ -34,9 +35,9 @@ def private_json(path):
         descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
         with os.fdopen(descriptor,'rb') as source:
             info=os.fstat(source.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o077 or info.st_size>16384:raise Denied('The team connection file must be a private regular file with one link.',code='team_connection_invalid')
-            raw=source.read(16385)
-            if len(raw)>16384:raise Denied('The team connection file is too large.',code='team_connection_invalid')
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o077 or info.st_size>131072:raise Denied('The team connection file must be a private regular file with one link.',code='team_connection_invalid')
+            raw=source.read(131073)
+            if len(raw)>131072:raise Denied('The team connection file is too large.',code='team_connection_invalid')
     except OSError:raise Denied('The private team connection file is unavailable.',code='team_connection_invalid')
     from gateway import decode_json
     data=decode_json(raw)
@@ -46,7 +47,7 @@ def private_json(path):
 
 def validate(config):
     required = {'version', 'coordinator_id', 'member_id', 'endpoint', 'token'}
-    if not required <= set(config) or set(config) - required - {'ssh', 'remote_port', 'identity_file','ssh_port','ssh_host_key','known_hosts'}:
+    if not required <= set(config) or set(config) - required - {'ssh', 'remote_port', 'identity_file','ssh_port','ssh_host_key','known_hosts','policy','policy_digest'}:
         raise Denied('Unsupported team connection fields.', code='team_connection_invalid')
     if type(config['version']) is not int or config['version'] != 1 or not all(isinstance(config[k], str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', config[k]) for k in ('coordinator_id', 'member_id')):
         raise Denied('Invalid coordinator or member identity.', code='team_connection_invalid')
@@ -55,6 +56,11 @@ def validate(config):
     match = re.fullmatch(r'http://127\.0\.0\.1:([0-9]{1,5})', config['endpoint']) if isinstance(config['endpoint'], str) else None
     if not match or not 1024 <= int(match[1]) <= 65535:
         raise Denied('Use a loopback endpoint; remote connections require the managed SSH tunnel.', code='team_connection_invalid')
+    if ('policy' in config)!=('policy_digest' in config):raise Denied('Incomplete shared policy binding.',code='team_connection_invalid')
+    if 'policy' in config:
+        try:p=validate_policy(config['policy'])
+        except PolicyError:raise Denied('Invalid coordinator model and quota policy.',code='team_connection_invalid') from None
+        if config['policy_digest']!=policy_digest(p):raise Denied('The invitation policy digest differs.',code='team_identity_changed')
     if 'ssh' in config:
         if not {'remote_port','identity_file','ssh_port','ssh_host_key','known_hosts'}<=set(config):
             raise Denied('The managed SSH connection needs its dedicated private identity, pinned host key and private known-hosts file. Host SSH defaults are never inherited.',code='team_connection_invalid')
@@ -183,7 +189,7 @@ class Connection:
             if control: control.check()
             conn.request(method, route, body=None if body is None else canonical(body), headers=headers)
             conn._api_socket = conn.sock
-            if conn.sock: conn.sock.settimeout(120)
+            if conn.sock: conn.sock.settimeout(max(120,control.phase_timeout) if control else 120)
             return conn, conn.getresponse()
         except (OSError, http.client.HTTPException):
             conn.close()
@@ -206,6 +212,7 @@ class Connection:
         identity = self.json('GET', '/identity', control=control)
         if not isinstance(identity, dict) or identity.get('service') != 'codex-api-team' or type(identity.get('version')) is not int or identity.get('version')!=1 or any(not hmac.compare_digest(str(identity.get(k,'')), self.config[k]) for k in ('coordinator_id','member_id')):
             raise Denied('The team coordinator identity does not match the approved invitation. Connection stopped.', code='team_identity_changed')
+        if 'policy_digest' in self.config and identity.get('policy_digest')!=self.config['policy_digest']:raise Denied('The coordinator policy differs from the reviewed invitation. Requests are stopped; review a refreshed invitation.',code='team_policy_changed')
         return identity
 
 
@@ -225,6 +232,7 @@ class RemoteBroker:
         validate(self.config)
         self.admission = threading.Lock()
         self.clock = time.time
+        self.policy=load_policy(self.root)
         self.workspace_guard = lambda: None
         from settings import ROOT
         if self.root == ROOT:
@@ -236,11 +244,13 @@ class RemoteBroker:
             conn.identity()
             value = conn.json('GET', '/v1/quota')
         pools = value.get('daily_pools',{}) if isinstance(value,dict) else {}
-        for group in ('A','B'):
+        if set(pools)!=set(self.policy['pools']):raise Denied('Coordinator quota pools differ from the approved policy.',code='team_policy_changed')
+        if 'policy_digest' in self.config and value.get('policy_digest')!=self.config['policy_digest']:raise Denied('Coordinator quota policy changed.',code='team_policy_changed')
+        for group in self.policy['pools']:
             row = pools.get(group,{})
-            if any(type(row.get(k)) is not int for k in ('remaining','limit')) or not 0<=row['remaining']<=row['limit']<=DAILY_LIMITS[group]:
+            if any(type(row.get(k)) is not int for k in ('remaining','limit')) or not 0<=row['remaining']<=row['limit']<=policy_limits(self.policy)[group]:
                 raise Denied('Shared quota could not be verified. No cached balance is used.', code='team_protocol_error')
-        value['usage_lines'] = [f"{g} ({POOL_LABELS[g]}): {pools[g]['remaining']:,} / {pools[g]['limit']:,} tokens remaining" for g in ('A','B')]
+        value['usage_lines'] = usage_lines(self.policy,pools)
         value['shared'] = True
         return value
 
@@ -250,7 +260,7 @@ class RemoteBroker:
             return conn.json('POST', '/v1/notices/claim', {})
 
     def request_more(self,payload):
-        if not isinstance(payload,dict) or set(payload)!={'group','amount','request_id'} or payload['group'] not in {'A','B'} or type(payload['amount']) is not int or not 0<payload['amount']<=DAILY_LIMITS[payload['group']] or not isinstance(payload['request_id'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,80}',payload['request_id']):
+        if not isinstance(payload,dict) or set(payload)!={'group','amount','request_id'} or payload['group'] not in self.policy['pools'] or type(payload['amount']) is not int or not 0<payload['amount']<=policy_limits(self.policy)[payload['group']] or not isinstance(payload['request_id'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,80}',payload['request_id']):
             raise Denied('Choose group A or B and a positive token amount.',code='team_request_invalid')
         with Connection(self.config) as conn:
             conn.identity()
@@ -260,14 +270,14 @@ class RemoteBroker:
         raise Denied('Search providers are disabled in shared mode until an independently budgeted adapter is approved.', code='provider_disabled')
 
     def openai(self, payload, send_headers, send_chunk, cancelled=lambda:False, *, operation_id=None, operation_namespace='local'):
-        normalized = normalize(payload, output_cap=16384)
+        normalized = normalize(payload, output_cap=self.policy['defaults']['output_token_cap'],policy=self.policy)
         self.workspace_guard()
         operation = operation_id or uuid.uuid4().hex
-        with RequestControl(cancelled, lambda:(self.root/'paused').exists()) as control:
+        with RequestControl(cancelled, lambda:(self.root/'paused').exists(),total=self.policy['defaults']['request_deadline_seconds']) as control:
             with Connection(self.config,control=control) as remote:
                 remote.identity(control)
                 control.check(); self.workspace_guard()
-                conn, response = control.call(lambda:remote.request('POST','/v1/responses',normalized,operation_id=operation,control=control), 'team_response_headers',120,returns_connection=True)
+                conn, response = control.call(lambda:remote.request('POST','/v1/responses',normalized,operation_id=operation,control=control), 'team_response_headers',900 if self.policy['defaults']['service_tier']=='flex' else 120,returns_connection=True)
                 try:
                     if response.status != 200:
                         raw = control.call(lambda:response.read(65537),'team_error',30)
@@ -277,7 +287,7 @@ class RemoteBroker:
                     if content_type not in {'application/json','text/event-stream'}:
                         raise Denied('Unexpected team response format.',code='team_protocol_error')
                     send_headers(content_type)
-                    control.begin('team_response_stream',120)
+                    control.begin('team_response_stream',900 if self.policy['defaults']['service_tier']=='flex' else 120)
                     total = 0
                     while True:
                         control.check()
@@ -305,6 +315,8 @@ def command(root, args):
     parser.add_argument('--ssh-port',type=int)
     parser.add_argument('--local',action='store_true',help='Owner on the same Mac: use the coordinator loopback directly.')
     parser.add_argument('--replace-member-credential',action='store_true')
+    parser.add_argument('--inspect',action='store_true',help='Show only the invitation policy; do not connect or install.')
+    parser.add_argument('--reviewed-policy-digest')
     parsed = parser.parse_args(args)
     with (root/'session.lock').open('a+b') as lease:
         try: fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -318,6 +330,9 @@ def command(root, args):
         config = private_json(parsed.invite)
         tunnel=config.pop('ssh',None) if isinstance(config.get('ssh'),dict) else None
         remote_port = validate(config)
+        if parsed.inspect:
+            p=config.get('policy',legacy());print(json.dumps({'policy':p,'digest':policy_digest(p),'effective_daily_limits':policy_limits(p)},indent=2));return
+        if 'policy_digest' in config and parsed.reviewed_policy_digest!=config['policy_digest']:raise Denied('Review the invitation policy with --inspect, then provide --reviewed-policy-digest. No connection was installed.',code='policy_review_required')
         if previous and any(previous[k]!=config[k] for k in ('coordinator_id','member_id')):
             raise Denied('A renewed invitation must preserve the coordinator and member identity; use a separate installation for another account.')
         if tunnel is not None and not parsed.local:
@@ -352,7 +367,9 @@ def command(root, args):
         validate(config)
         with Connection(config) as remote: remote.identity()
         atomic_json(root/'team-client.json',config)
-    print('Team connection verified. The member credential stays outside the sandbox. Daily startup and two-line usage are unchanged.')
+        from configuration import refresh_guest
+        refresh_guest(root)
+    print('Team connection verified. The member credential stays outside the sandbox. Daily startup and usage use the approved coordinator policy.')
     print('The coordinator handles prompts and responses. Its owner must be trusted and the Mac must remain online.')
 
 

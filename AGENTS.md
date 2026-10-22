@@ -5,6 +5,7 @@ When the user asks to install or configure this harness, read **SETUP.md in full
 - Inspect first. Explain the result briefly in the user's language.
 - Ask for missing choices at the point they become necessary. Offer the recommended option first and explain the consequence in one sentence.
 - Do not ask for API keys, passwords, tokens, or private configuration contents in chat. Create the supported private file, tell the owner exactly where it is, and let them fill it locally. Never print it or include it in tool output.
+- Model, budget and tier defaults are proposals. Never apply the maintainer's preset or invent an account allowance. Read docs/CONFIGURATION.md; confirm each pool's actual allowance and prior usage, verify model capabilities from official sources, and use the exact reviewed policy digest. Existing owner choices remain valid authorization.
 - Never inherit an existing API key, subscription login, shell secret, SSH agent, browser session, plugin, or personal skill.
 - Do not scan unrelated repositories or home-directory contents. Use the bounded context inventory in SETUP.md.
 - Do not allow API charges, assert free eligibility, initialize shared Docker policy, install missing system prerequisites, or mount an existing project without the owner's informed choice. Prior explicit authorization remains valid; do not ask again.

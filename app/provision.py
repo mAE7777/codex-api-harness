@@ -111,7 +111,11 @@ print(json.dumps(out))'''
     with tempfile.TemporaryDirectory(prefix='offline-check-',dir=ROOT) as temporary:
         root=Path(temporary);(root/'gateway.token').write_text(token);(root/'openai-key.env').write_text('OPENAI_API_KEY=fake-offline-key\n');(root/'openai-key.env').chmod(0o600)
         now=time.time()
-        atomic_json(root/'verification.json',{'openai':{'enabled':True,'billing_policy':'metered','project_id':'fake-project','organization_id':'fake-org','quota_guard':True,'org_exclusive':True,'daily_token_limits':{'A':100000,'B':1000000},'output_token_cap':16384}})
+        import copy
+        from policy import load as load_policy
+        selected=load_policy(ROOT);fake_policy=copy.deepcopy(selected)
+        for row in fake_policy['pools'].values():row['daily_tokens']=100000000
+        atomic_json(root/'verification.json',{'openai':{'enabled':True,'billing_policy':'metered','project_id':'fake-project','organization_id':'fake-org','quota_guard':True,'org_exclusive':True,'policy':fake_policy}})
         ledger=Ledger(root/'state',initialize=True);ledger.pause(False)
         calls=[];outputs=[]
         class Connection:
@@ -124,6 +128,8 @@ print(json.dumps(out))'''
                 return self.content_type if name.lower()=='content-type' else default
         def transport(host,path,body,headers):
             calls.append(path)
+            if body.get('model') not in selected['models']:raise RuntimeError('Unexpected acceptance model')
+            if path=='/v1/responses' and body.get('service_tier')!=selected['defaults']['service_tier']:raise RuntimeError('Unexpected acceptance tier')
             if path.endswith('input_tokens'):return Connection(),Response(b'{"input_tokens":100}','application/json')
             if path!='/v1/responses':raise RuntimeError('Unexpected offline test route')
             index=calls.count('/v1/responses')
@@ -135,12 +141,12 @@ print(json.dumps(out))'''
                 replay=[x.get('output') for x in body.get('input',[]) if x.get('type')=='custom_tool_call_output']
                 outputs.append('42' in json.dumps(replay))
                 item={'type':'response.output_item.done','item':{'id':'offline-message','type':'message','role':'assistant','content':[{'type':'output_text','text':'HARNESS_OFFLINE_PASS'}]}}
-            events=[{'type':'response.created','response':{'id':'offline-response'}},item,{'type':'response.completed','response':{'id':'offline-response','usage':{'input_tokens':100,'output_tokens':10,'total_tokens':110}}}]
+            events=[{'type':'response.created','response':{'id':'offline-response'}},item,{'type':'response.completed','response':{'id':'offline-response','usage':{'input_tokens':100,'output_tokens':min(10,body['max_output_tokens']),'total_tokens':100+min(10,body['max_output_tokens'])}}}]
             return Connection(),Response(b''.join(b'data: '+json.dumps(e).encode()+b'\n\n' for e in events),'text/event-stream')
         server=gateway.make_server(root,ledger,port=PORT,transport=transport)
         thread=threading.Thread(target=server.serve_forever);thread.start()
         try:
-            r=call(['exec',NAME,'/usr/local/bin/codex-api-entrypoint','--no-daemon','-m','gpt-5.6-terra','exec','--ephemeral','--skip-git-repo-check','--json',
+            r=call(['exec',NAME,'/usr/local/bin/codex-api-entrypoint','--no-daemon','-m',selected['defaults']['model'],'exec','--ephemeral','--skip-git-repo-check','--json',
                     'Offline installation check. Use the provided local tool, then answer.'],timeout=100)
             report['offline_protocol']=r.returncode==0 and 'HARNESS_OFFLINE_PASS' in r.stdout and any(outputs) and ledger.status()['unresolved']==0
             if not report['offline_protocol']:raise Denied('Offline CLI protocol acceptance failed. No provider was called.')
@@ -154,6 +160,8 @@ def prepare(configure_host=False):
     with (ROOT/'session.lock').open('a+b') as lease:
         try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise Denied('Exit the API session before preparing its sandbox.')
+        from configuration import refresh_guest
+        refresh_guest(ROOT)
         installation = integrity();workspace_check()
         from extensions import verify_build
         verify_build(ROOT)

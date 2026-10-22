@@ -17,6 +17,7 @@ from team_client import Connection, RemoteBroker, command, private_json, validat
 
 class RelayTests(unittest.TestCase):
     def setUp(self):
+        self.renderer=mock.patch('configuration.refresh_guest',return_value=False);self.renderer.start();self.addCleanup(self.renderer.stop)
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
         self.token=secrets.token_urlsafe(48);self.requests=[];self.identity='coordinator_fixture'
         test=self

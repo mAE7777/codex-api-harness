@@ -1,6 +1,6 @@
 # Reviewed skills
 
-Managed skills are optional. They do not change ordinary startup or the two-line usage display. No host skill, plugin login, connector, browser session, or environment secret is imported.
+Managed skills are optional. They do not change ordinary startup or the policy-derived usage display. No host skill, plugin login, connector, browser session, or environment secret is imported.
 
 The harness supports standalone skill folders and **skill-only** `.codex-plugin/plugin.json` bundles. Native plugin installation, apps, MCP servers, lifecycle hooks, and automatic dependency installation remain disabled. A plugin declaring any of those capabilities is rejected; the harness does not silently remove them and claim the complete plugin works.
 

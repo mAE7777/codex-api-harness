@@ -19,10 +19,10 @@ import urllib.request
 
 SOURCE = Path(__file__).resolve().parent
 sys.path.insert(0, str(SOURCE/'app'))
-from guard import DAILY_LIMITS, Denied, Ledger, atomic_json
+from guard import Denied, Ledger, atomic_json
 from workspace_policy import check_workspace, managed_requirements
 
-VERSION = '0.2.0'
+VERSION = '0.3.0'
 INSTALL_LAYOUT_VERSION = 2
 UPDATER_ABI = 1
 SBX_VERSION = '0.49.1'
@@ -34,9 +34,9 @@ DEFAULT_HOME = Path.home()/'Library/Application Support/CodexAPIHarness'
 APP_FILES = ('settings.py','guard.py','gateway.py','controller.py','diagnostics.py',
              'recovery.py','transport_control.py','workspace_policy.py','onboarding.py','provision.py',
              'team_client.py','shared.py','extensions.py','maintenance.py','releases.py',
-             'session_state.py','team_ssh.py')
+             'session_state.py','team_ssh.py','policy.py','configuration.py')
 KIT_FILES = ('codex-api.yaml','codex-api.dockerfile','config.toml','models.json',
-             'entrypoint.sh','preferences.py','quota-client.py','quota-notice.py','web-tool.py','npmrc')
+             'model-template.json','runtime-policy.json','entrypoint.sh','preferences.py','quota-client.py','quota-notice.py','web-tool.py','npmrc')
 
 
 def default_sbx():
@@ -96,7 +96,7 @@ def launcher_text(root):
     return ('#!/bin/sh\n# codex-api-harness launcher; subscription Codex is never invoked.\n'
             'case "${1-}" in\n'
             "  '') set -- start ;;\n"
-            '  start|status|usage|doctor|explain|reconcile|stop|pause|login|prepare|reset|retire|configure|credentials|billing|team|extensions|protect|upgrade|help) ;;\n'
+            '  start|status|usage|doctor|explain|reconcile|stop|pause|login|prepare|reset|retire|configure|credentials|billing|policy|team|extensions|protect|upgrade|help) ;;\n'
             '  -h|--help) set -- help ;;\n'
             '  *) set -- start "$@" ;;\n'
             'esac\n'+prefix+' "$@"\n')
@@ -186,7 +186,7 @@ def install(root,workspace,sbx=None,*,bootstrap=False,port=49188,launcher=None):
         ledger=Ledger(stage/'state',initialize=True);ledger.close()
         atomic_json(stage/'verification.json',{'openai':{'enabled':False,'verified':False,'billing_policy':'free_only',
                     'account_configured':False,'quota_guard':True,'org_exclusive':False,
-                    'daily_token_limits':dict(DAILY_LIMITS),'output_token_cap':16384},
+                    'policy':__import__('policy').empty()},
                     'tavily':{'enabled':False},'exa':{'enabled':False},'brave':{'enabled':False}})
         atomic_json(stage/'readiness.json',{k:False for k in ('docker_authenticated','image_built','filesystem_tested','network_tested','host_integrations_absent','codex_protocol_tested','openai_free_verified')})
         subscription=Path.home()/'.codex/config.toml'

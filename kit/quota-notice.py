@@ -25,7 +25,7 @@ def main():
         with opener.open(request,timeout=.6) as response:data=response.read(16385)
         if len(data)>16384:return 0
         notices=json.loads(data).get('notices',[])
-        if not isinstance(notices,list) or len(notices)>2:return 0
+        if not isinstance(notices,list) or len(notices)>8:return 0
         messages=[n.get('message') for n in notices if isinstance(n,dict)]
         if len(messages)!=len(notices) or not all(isinstance(m,str) and m.isascii() and len(m)<=512 and m.startswith('API quota warning - Group ') and not any(ord(c)<32 for c in m) for m in messages):return 0
         if messages:print(json.dumps({'systemMessage':'\n'.join(messages)}),flush=True)

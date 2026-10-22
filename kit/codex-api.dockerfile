@@ -31,7 +31,7 @@ RUN pwcli=$(node -e 'process.stdout.write(require.resolve("playwright/package.js
     && node "$pwcli" install chromium \
     && playwright-cli --version | grep -q '0.1.22'
 USER root
-COPY config.toml models.json /etc/codex-api/
+COPY config.toml models.json runtime-policy.json /etc/codex-api/
 COPY preferences.py /etc/codex-api/preferences.py
 COPY extensions /etc/codex-api/extensions/
 COPY requirements.toml /etc/codex/requirements.toml

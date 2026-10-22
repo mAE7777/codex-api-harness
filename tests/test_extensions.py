@@ -26,6 +26,9 @@ client=importlib.util.module_from_spec(client_spec);client_spec.loader.exec_modu
 
 class ExtensionTests(unittest.TestCase):
     def setUp(self):
+        from policy import legacy
+        self.policy_patcher=patch.object(preferences,'model_policy',return_value=legacy());self.policy_patcher.start();self.addCleanup(self.policy_patcher.stop)
+        self.client_policy_patcher=patch.object(client.runpy,'run_path',return_value={'model_policy':lambda:legacy()});self.client_policy_patcher.start();self.addCleanup(self.client_policy_patcher.stop)
         self.tmp=tempfile.TemporaryDirectory();self.base=Path(self.tmp.name).resolve()
         self.root=self.base/'installation';self.root.mkdir();(self.root/'kit').mkdir();(self.root/'paused').touch()
         (self.root/'readiness.json').write_text(json.dumps({key:True for key in extensions.IMAGE_KEYS}))
@@ -249,7 +252,7 @@ class KitActivationTests(unittest.TestCase):
             if args[0]=='create':rows.append({'name':provision.NAME,'id':'replacement','workspaces':[str(provision.WORKSPACE)]})
             return subprocess.CompletedProcess(args,0,'','')
         installation={'files':{'kit/config.toml':hashlib.sha256(b'policy').hexdigest()}}
-        with patch.object(provision,'ROOT',self.root),patch.object(controller,'integrity',return_value=installation),patch.object(controller,'workspace_check'),patch.object(controller,'owned_sandbox',side_effect=lambda:rows[0] if rows else None),patch.object(controller,'sandbox_inventory',side_effect=lambda:list(rows)),patch.object(provision,'host_issues',return_value=[]),patch.object(provision,'call',side_effect=call),patch.object(provision,'acceptance',return_value={'passed':True}),patch.object(session_state,'capture') as capture,patch.object(session_state,'restore'),patch.object(session_state,'complete'):
+        with patch('configuration.refresh_guest',return_value=False),patch.object(provision,'ROOT',self.root),patch.object(controller,'integrity',return_value=installation),patch.object(controller,'workspace_check'),patch.object(controller,'owned_sandbox',side_effect=lambda:rows[0] if rows else None),patch.object(controller,'sandbox_inventory',side_effect=lambda:list(rows)),patch.object(provision,'host_issues',return_value=[]),patch.object(provision,'call',side_effect=call),patch.object(provision,'acceptance',return_value={'passed':True}),patch.object(session_state,'capture') as capture,patch.object(session_state,'restore'),patch.object(session_state,'complete'):
             provision.prepare();provision.prepare()
         self.assertEqual(capture.call_args.args[3],'owned')
         self.assertEqual([c for c in calls if c[0]=='rm'],[['rm',provision.NAME,'--force']])
@@ -259,12 +262,12 @@ class KitActivationTests(unittest.TestCase):
 
     def test_prepare_refuses_unproven_identity_without_removal(self):
         extensions.render_build(self.root);atomic_json(self.root/'sandbox-created.json',{'name':provision.NAME,'id':'owned'})
-        with patch.object(provision,'ROOT',self.root),patch.object(controller,'integrity',return_value={'files':{}}),patch.object(controller,'workspace_check'),patch.object(controller,'owned_sandbox',return_value=None),patch.object(provision,'host_issues',return_value=[]),patch.object(provision,'call') as call:
+        with patch('configuration.refresh_guest',return_value=False),patch.object(provision,'ROOT',self.root),patch.object(controller,'integrity',return_value={'files':{}}),patch.object(controller,'workspace_check'),patch.object(controller,'owned_sandbox',return_value=None),patch.object(provision,'host_issues',return_value=[]),patch.object(provision,'call') as call:
             with self.assertRaises(Denied):provision.prepare()
         call.assert_not_called()
 
     def test_capture_failure_stops_before_owned_vm_removal(self):
         extensions.render_build(self.root);marker=self.root/'sandbox-created.json';atomic_json(marker,{'name':provision.NAME,'id':'owned','kit_digest':'old'})
-        with patch.object(provision,'ROOT',self.root),patch.object(controller,'integrity',return_value={'files':{}}),patch.object(controller,'workspace_check'),patch.object(controller,'owned_sandbox',return_value={'id':'owned'}),patch.object(provision,'host_issues',return_value=[]),patch.object(provision,'call') as call,patch.object(session_state,'capture',side_effect=Denied('unsafe export')):
+        with patch('configuration.refresh_guest',return_value=False),patch.object(provision,'ROOT',self.root),patch.object(controller,'integrity',return_value={'files':{}}),patch.object(controller,'workspace_check'),patch.object(controller,'owned_sandbox',return_value={'id':'owned'}),patch.object(provision,'host_issues',return_value=[]),patch.object(provision,'call') as call,patch.object(session_state,'capture',side_effect=Denied('unsafe export')):
             with self.assertRaises(Denied):provision.prepare()
         call.assert_not_called();self.assertEqual(json.loads(marker.read_text())['id'],'owned')

@@ -52,7 +52,7 @@ class PartialBuildTests(unittest.TestCase):
                 raise Denied('Synthetic image download failed')
 
     def prepare(self):
-        with patch.object(provision,'ROOT',self.root),patch.object(controller,'integrity',return_value=self.installation),patch.object(controller,'workspace_check'),patch.object(controller,'owned_sandbox',side_effect=lambda:self.rows[0] if self.rows else None),patch.object(controller,'sandbox_inventory',side_effect=lambda:list(self.rows)),patch.object(provision,'host_issues',return_value=[]),patch.object(provision,'call',side_effect=self.call),patch.object(provision,'acceptance',return_value={'passed':True,'real_provider_requests':0}),patch.object(session_state,'_exchange',side_effect=self.exchange),patch('extensions.verify_build'):
+        with patch('configuration.refresh_guest',return_value=False),patch.object(provision,'ROOT',self.root),patch.object(controller,'integrity',return_value=self.installation),patch.object(controller,'workspace_check'),patch.object(controller,'owned_sandbox',side_effect=lambda:self.rows[0] if self.rows else None),patch.object(controller,'sandbox_inventory',side_effect=lambda:list(self.rows)),patch.object(provision,'host_issues',return_value=[]),patch.object(provision,'call',side_effect=self.call),patch.object(provision,'acceptance',return_value={'passed':True,'real_provider_requests':0}),patch.object(session_state,'_exchange',side_effect=self.exchange),patch('extensions.verify_build'):
             provision.prepare()
 
     def test_failed_first_create_is_owned_but_not_marked_built_and_retries_normally(self):

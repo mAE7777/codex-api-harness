@@ -9,6 +9,9 @@ from test_preferences_and_recovery import DailyFixture
 from test_preferences_and_recovery import preferences
 
 class CliPolicyTests(unittest.TestCase):
+ def setUp(self):
+  from policy import legacy
+  self.patcher=patch.object(preferences,'model_policy',return_value=legacy());self.patcher.start();self.addCleanup(self.patcher.stop)
  def test_protected_overrides_are_refused_before_native_cli(self):
   for args in (['--dangerously-bypass-approvals-and-sandbox'],['sandbox','-P',':danger-full-access'],['-c','sandbox_mode="danger-full-access"'],['--config=model_provider="openai"'],['--add-dir','/tmp'],['--search'],['--dangerously-bypass-hook-trust'],['-m','unapproved'],['-C','/home/agent']):
    with self.subTest(args=args),self.assertRaises(preferences.PolicyArgumentError):preferences.validate_cli_args(args)

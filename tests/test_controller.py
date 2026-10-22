@@ -98,7 +98,7 @@ class ControllerTests(unittest.TestCase):
         ready['openai_free_verified']=False
         (self.root/'readiness.json').write_text(json.dumps(ready))
         (self.root/'verification.json').write_text(json.dumps({'openai':{'billing_policy':'metered'}}))
-        with patch.object(controller,'integrity'),patch.object(controller,'workspace_check'),patch.object(controller,'credentials',return_value={'OPENAI_API_KEY':'fake'}):
+        with patch.object(controller,'verify_guest'),patch.object(controller,'integrity'),patch.object(controller,'workspace_check'),patch.object(controller,'credentials',return_value={'OPENAI_API_KEY':'fake'}):
             self.assertEqual(controller.blockers(),[])
             ready['network_tested']=False
             (self.root/'readiness.json').write_text(json.dumps(ready))

@@ -14,15 +14,10 @@ import threading
 import time
 import uuid
 
-MODELS = {
-    "gpt-6-astra": "A", "gpt-6.1-sol": "A", "gpt-6-luna": "A",
-    "gpt-5.6-terra": "B", "gpt-5.6-luna": "B",
-}
-DAILY_LIMITS = {'A': 237500, 'B': 2375000}
+from policy import LEGACY_MODELS as MODELS, LEGACY_LIMITS as DAILY_LIMITS, LEGACY_LABELS as POOL_LABELS, MAX_TOKENS, MAX_POOLS
 REQUEST_DEADLINE_SECONDS = 600
 UTC_NEW_DAY_GUARD_SECONDS = 15
 UTC_OVERLAP_SECONDS = REQUEST_DEADLINE_SECONDS + UTC_NEW_DAY_GUARD_SECONDS
-POOL_LABELS = {'A': '6.1 Sol / 6 Astra / 6 Luna', 'B': '5.6 Terra / 5.6 Luna'}
 LOCAL_FUNCTIONS = {"exec_command", "write_stdin", "shell", "shell_command",
                    "update_plan", "request_user_input", "request_user_input_async", "view_image", "wait", "sleep"}
 LOCAL_CUSTOM = {"apply_patch", "exec"}
@@ -68,6 +63,10 @@ def atomic_json(path, value):
         if temp.exists(): temp.unlink()
 
 
+def valid_limits(limits):
+    return isinstance(limits,dict) and 1<=len(limits)<=MAX_POOLS and all(isinstance(g,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,15}',g) and g!='metered' and type(v) is int and 0<v<=MAX_TOKENS for g,v in limits.items())
+
+
 def pool_info(db, group, ceiling, day):
     """Shared accounting formula for admission and read-only quota views."""
     scope = 'openai:' + group
@@ -108,10 +107,11 @@ def readonly_database(root):
         os.close(lease)
 
 
-def read_quota(root, limits, *, now=None):
+def read_quota(root, limits, *, now=None, policy=None):
     """One consistent, witnessed read transaction. Never reserves or repairs usage."""
     root = Path(root)
-    if set(limits) != {'A','B'} or any(type(v) is not int or not 0 < v <= DAILY_LIMITS[g] for g,v in limits.items()):
+    from policy import limits as policy_limits
+    if not valid_limits(limits) or policy is not None and limits!=policy_limits(policy):
         raise Denied('Daily quota settings are unavailable; run codex-api doctor.', code='quota_settings_changed')
     if (root/'usage.sqlite3').is_symlink() or (root/'ledger-witness.json').is_symlink() or not (root/'usage.sqlite3').is_file():
         raise Denied('Usage ledger is missing; run codex-api doctor.', code='quota_state_unavailable')
@@ -128,7 +128,7 @@ def read_quota(root, limits, *, now=None):
                     raise Denied('Ledger and witness differ; run codex-api doctor. No quota was reset.', code='quota_reconciliation_required')
                 if db.execute("SELECT 1 FROM requests WHERE scope='openai:metered' AND phase!='settled'").fetchone():
                     raise Denied('Earlier unclassified usage is unknown; run codex-api reconcile.', code='quota_history_unknown')
-                pools = {g:pool_info(db, g, limits[g], day) for g in ('A','B')}
+                pools = {g:pool_info(db, g, limits[g], day) for g in limits}
                 for p in pools.values(): p['used_or_reserved'] += p['baseline']
                 result = {'period':day, 'observed_at':dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat(),
                           'reset_at':(dt.datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=dt.timezone.utc)+dt.timedelta(days=1)).isoformat(),
@@ -136,7 +136,8 @@ def read_quota(root, limits, *, now=None):
                           'recorded_requests':db.execute('SELECT COUNT(*) FROM requests').fetchone()[0],
                           'unresolved_requests':db.execute("SELECT COUNT(*) FROM requests WHERE phase IN ('reserved','unknown')").fetchone()[0],
                           'safety_stop':(root/'safety-stop.json').exists()}
-                result['usage_lines'] = [f"{g} ({POOL_LABELS[g]}): {pools[g]['remaining']:,} / {pools[g]['limit']:,} tokens remaining" for g in ('A','B')]
+                from policy import usage_lines, legacy
+                result['usage_lines'] = usage_lines(policy or legacy({'daily_token_limits':limits}),pools)
                 return result
         except (sqlite3.Error, OSError, ValueError, TypeError) as error:
             raise Denied('Usage state cannot be verified; run codex-api doctor.', code='quota_state_unavailable') from error
@@ -164,12 +165,21 @@ def _tool(tool):
         raise Denied("Hosted or unreviewed tool denied")
 
 
-def normalize(payload, output_cap=4096):
+def normalize(payload, output_cap=4096, *, policy=None):
     if not isinstance(payload, dict) or set(payload) - ROOT_FIELDS:
         raise Denied("Unknown request field or endpoint capability")
+    from policy import validate, legacy, tier, PolicyError
+    try:p=validate(policy) if policy is not None else legacy()
+    except PolicyError as error:raise Denied(str(error),code='policy_invalid') from None
     model = payload.get("model")
-    if not isinstance(model, str) or model not in MODELS: raise Denied("Model is not one of the five approved models")
-    if payload.get("service_tier", "default") != "default": raise Denied("Paid service tier denied")
+    if not isinstance(model,str) or model not in p['models']:
+        raise Denied('The model is outside the owner-approved policy. Select an allowed model with /model.',code='model_not_allowed')
+    try:selected_tier=tier(payload.get('service_tier',p['defaults']['service_tier']))
+    except (PolicyError,TypeError):raise Denied('This service tier is not approved. Use the tier selected in the owner policy.',code='service_tier_disabled') from None
+    if selected_tier!=p['defaults']['service_tier']:
+        raise Denied('This service tier differs from the owner-approved policy. No automatic tier fallback is allowed.',code='service_tier_disabled')
+    if output_cap>p['models'][model]['max_output_tokens']:
+        raise Denied('The output cap exceeds the reviewed model limit.',code='policy_invalid')
     if payload.get("store", False) is not False: raise Denied("Response storage denied")
     tools = payload.get("tools", [])
     if not isinstance(tools, list): raise Denied("Invalid tools")
@@ -247,7 +257,12 @@ def normalize(payload, output_cap=4096):
             raise Denied("Conflicting client tool declarations")
         result['tools'] = reviewed
         result['input'] = [i for i in source if i.get('type') != 'additional_tools']
-    result.update(store=False, service_tier="default", max_output_tokens=maximum, parallel_tool_calls=False)
+    reasoning=result.get('reasoning',{})
+    if not isinstance(reasoning,dict) or set(reasoning)-{'effort','summary'}:raise Denied('Unsupported reasoning field.',code='reasoning_not_allowed')
+    effort=reasoning.get('effort')
+    if effort is not None and effort not in p['models'][model]['reasoning_efforts']:
+        raise Denied('The reasoning effort is unsupported by this approved model.',code='reasoning_not_allowed')
+    result.update(store=False, service_tier=selected_tier, max_output_tokens=maximum, parallel_tool_calls=False)
     if result.get("truncation", "disabled") != "disabled": raise Denied("Server truncation denied")
     return result
 
@@ -255,6 +270,7 @@ def normalize(payload, output_cap=4096):
 class Ledger:
     def __init__(self, root, *, initialize=False, clock=time.time):
         self.root, self.clock = Path(root), clock
+        self.overlap_seconds = UTC_OVERLAP_SECONDS
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.lockfile = (self.root / "process.lock").open("a+b")
         self.db = None
@@ -471,7 +487,7 @@ class Ledger:
         with self.mutex:
             info = self.daily_remaining(group,ceiling)
             if info['remaining'] < amount:
-                raise Denied(f"Group {group} requires up to {amount:,} tokens, but only {info['remaining']:,} remain. The model request was blocked before dispatch. Select a model from the other group or retry after 00:00 UTC.", code="daily_token_limit", status=429, details=info | {"required":amount})
+                raise Denied(f"Group {group} requires up to {amount:,} tokens, but only {info['remaining']:,} remain. The model request was blocked before dispatch. Select an allowed model with sufficient quota or retry after 00:00 UTC.", code="daily_token_limit", status=429, details=info | {"required":amount})
             request_id=uuid.uuid4().hex
             with self.transaction():
                 if self.db.execute("SELECT paused FROM meta").fetchone()[0]: raise Denied("Gateway is paused")
@@ -539,12 +555,12 @@ class Ledger:
         """
         targets=set()
         if scope.startswith('openai:') and period!=today:targets.add(today)
-        if scope in {'openai:A','openai:B'} and re.fullmatch(r'\d{4}-\d{2}-\d{2}',period):
+        if scope.startswith('openai:') and scope!='openai:metered' and re.fullmatch(r'\d{4}-\d{2}-\d{2}',period):
             started=dt.datetime.fromtimestamp(created,dt.timezone.utc)
             if started.strftime('%Y-%m-%d')==period:
                 midnight=started.replace(hour=0,minute=0,second=0,microsecond=0)+dt.timedelta(days=1)
                 seconds=midnight.timestamp()-created
-                if 0<seconds<=UTC_OVERLAP_SECONDS:targets.add(midnight.strftime('%Y-%m-%d'))
+                if 0<seconds<=self.overlap_seconds:targets.add(midnight.strftime('%Y-%m-%d'))
         for target in targets:
             # One request/day primary key prevents a genuine next-day terminal
             # from being counted a second time by the overlap rule.
@@ -556,9 +572,9 @@ class Ledger:
                 "unresolved": self.db.execute("SELECT COUNT(*) FROM requests WHERE phase IN ('reserved','unknown')").fetchone()[0],
                 "requests": self.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]}
 
-    def claim_daily_notices(self, limits):
+    def claim_daily_notices(self, limits, *, warning_percent=90):
         """At most one UI notice per UTC day/group; this never changes a budget."""
-        if set(limits)!={'A','B'} or any(type(v) is not int or not 0<v<=DAILY_LIMITS[g] for g,v in limits.items()):
+        if not valid_limits(limits) or type(warning_percent) is not int or not 1<=warning_percent<=99:
             raise Denied('Daily quota settings cannot be verified',code='quota_settings_changed')
         with self.mutex:
             self.check_clock()
@@ -568,16 +584,16 @@ class Ledger:
                 raise Denied('Earlier usage is unknown',code='quota_history_unknown')
             now=self.clock();day=dt.datetime.fromtimestamp(now,dt.timezone.utc).strftime('%Y-%m-%d')
             pending=[]
-            for group in ('A','B'):
+            for group in limits:
                 info=pool_info(self.db,group,limits[group],day)
                 used=info['baseline']+info['used_or_reserved']
-                if used*10 < limits[group]*9:continue
-                if self.db.execute('SELECT 1 FROM quota_notices WHERE period=? AND group_id=? AND threshold=90',(day,group)).fetchone():continue
-                pending.append({'group':group,'period':day,'threshold':90,'remaining':info['remaining'],
-                    'message':f"API quota warning - Group {group}: 90%+ used or reserved; {info['remaining']:,} tokens left. Resets 00:00 UTC."})
+                if used*100 < limits[group]*warning_percent:continue
+                if self.db.execute('SELECT 1 FROM quota_notices WHERE period=? AND group_id=? ',(day,group)).fetchone():continue
+                pending.append({'group':group,'period':day,'threshold':warning_percent,'remaining':info['remaining'],
+                    'message':f"API quota warning - Group {group}: {warning_percent}%+ used or reserved; {info['remaining']:,} tokens left. Resets 00:00 UTC."})
             if pending:
                 with self.transaction():
-                    for notice in pending:self.db.execute('INSERT INTO quota_notices VALUES (?,?,90,?)',(day,notice['group'],now))
+                    for notice in pending:self.db.execute('INSERT INTO quota_notices VALUES (?,?,?,?)',(day,notice['group'],warning_percent,now))
             return pending
 
     def reconcile(self, plan):

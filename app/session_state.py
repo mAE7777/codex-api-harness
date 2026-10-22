@@ -32,10 +32,11 @@ PREFERENCE_FILTER = '''
 def clean_preferences(data):
  out={}
  if not isinstance(data,dict):return out
- enums={'model':{'gpt-6-astra','gpt-6.1-sol','gpt-6-luna','gpt-5.6-terra','gpt-5.6-luna'},'model_reasoning_effort':{'low','medium','high','xhigh','max','ultra'},'model_reasoning_summary':{'auto','concise','detailed','none'},'model_verbosity':{'low','medium','high'}}
+ enums={'model_reasoning_effort':{'none','minimal','low','medium','high','xhigh','max','ultra'},'model_reasoning_summary':{'auto','concise','detailed','none'},'model_verbosity':{'low','medium','high'}}
  for key,allowed in enums.items():
   if isinstance(data.get(key),str) and data[key] in allowed:out[key]=data[key]
- if out.get('model') in {'gpt-6-luna','gpt-5.6-luna'} and out.get('model_reasoning_effort')=='ultra':out['model_reasoning_effort']='max'
+ # A model name in a backup grants no permission; guest startup applies the current policy.
+ if isinstance(data.get('model'),str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}',data['model']):out['model']=data['model']
  tui=data.get('tui',{})
  if isinstance(tui,dict):
   safe={}

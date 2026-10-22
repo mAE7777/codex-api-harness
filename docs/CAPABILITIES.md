@@ -4,10 +4,13 @@ This release supports macOS Apple Silicon, Python 3.11.8+, Docker Sandboxes 0.49
 
 | Capability | Status | Boundary |
 |---|---|---|
-| Five-model picker, reasoning/UI preferences, API resume | Supported | Protected policy overrides preferences |
+| Owner-selected model picker, reasoning/UI preferences, API resume | Supported | One validated owner policy overrides preferences |
+| Explicit Standard/Fast/Flex/Ultrafast policy | Supported | All selected models must support it; billing/account access checked separately; no auto/fallback |
+| Custom daily UTC pools, limits and margin | Supported | State-preserving stopped-session change; no monthly/local-time reset assumption |
+| Initialized coordinator policy replacement | Deferred | Refused without a reviewed migration; allocation changes stay available |
 | Shell, patches, Code Mode and local Playwright | Supported | One original project mount; restricted runtime network |
 | Exact count, input + maximum output reservation | Supported | Unknown terminal usage keeps the full hold |
-| Two-line English usage; 90% daily group notice | Supported | Warnings do not authorize requests |
+| One English line per pool; configurable daily notice | Supported | Warnings do not authorize requests |
 | Multiple members in one project or different projects | Optional | One authoritative organization coordinator |
 | Shared project cap, member cap, temporary transfer | Optional | Atomic accounting; used/reserved tokens cannot transfer |
 | Quota request and owner approval | Optional | No automatic budget increase; repeated approval is idempotent |

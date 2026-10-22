@@ -26,7 +26,8 @@ import threading
 import time
 import uuid
 
-from guard import Denied, Ledger, MODELS, DAILY_LIMITS, POOL_LABELS, atomic_json, canonical, pool_info
+from guard import Denied, Ledger, DAILY_LIMITS, atomic_json, canonical, pool_info
+from policy import load as load_policy, validate as validate_policy, limits as policy_limits, legacy, digest as policy_digest, usage_lines, read_json as policy_json
 from gateway import Broker, decode_json, public_error, upstream
 
 DEFAULT_PORT = 49200
@@ -60,10 +61,11 @@ def _identifier(value, kind='member'):
     return value
 
 
-def _limits(a, b, *, zero=True):
-    values = {'A':a, 'B':b}
-    if any(type(v) is not int or not (0 if zero else 1) <= v <= DAILY_LIMITS[g] for g,v in values.items()):
-        raise Denied('Token allocations must be integers within the organization safety limits.', code='team_allocation_invalid')
+def _limits(a=None, b=None, *, zero=True, ceilings=None):
+    ceilings=ceilings or DAILY_LIMITS
+    values=a if isinstance(a,dict) and b is None else {'A':a,'B':b}
+    if not isinstance(values,dict) or set(values)!=set(ceilings) or any(type(v) is not int or not (0 if zero else 1)<=v<=ceilings[g] for g,v in values.items()):
+        raise Denied('Provide one integer allocation per approved pool, within the organization safety limits.',code='team_allocation_invalid')
     return values
 
 
@@ -91,14 +93,33 @@ class Team:
             row = self.ledger.db.execute('SELECT coordinator,organization,revision FROM team_config').fetchone()
             if not row: raise Denied('The coordinator has not been initialized.', code='team_not_initialized')
             self.coordinator_id, self.organization_id, _ = row
+            self.policy=validate_policy(policy_json(self.root/'policy.json',private=True)) if (self.root/'policy.json').exists() else legacy()
+            self.limits=policy_limits(self.policy)
+            self.ledger.overlap_seconds=self.policy['defaults']['request_deadline_seconds']+15
+            self._migrate_pool_tables()
             for name in ('members','projects','invites'): _private_directory(self.root/name)
         except Exception:
             self.ledger.close()
             self.upgrade_lease.close()
             raise
 
+    def _migrate_pool_tables(self):
+        if self.ledger.db.execute("SELECT 1 FROM sqlite_master WHERE name='team_pool_defaults'").fetchone():return
+        with self.ledger.transaction():
+            self.ledger.db.execute('CREATE TABLE team_pool_defaults (member TEXT,group_id TEXT,ceiling INTEGER NOT NULL,PRIMARY KEY(member,group_id))')
+            self.ledger.db.execute('CREATE TABLE team_pool_projects (project TEXT,group_id TEXT,ceiling INTEGER NOT NULL,PRIMARY KEY(project,group_id))')
+            for m,a,b in self.ledger.db.execute('SELECT id,default_a,default_b FROM team_members'):
+                for g,v in (('A',a),('B',b)):self.ledger.db.execute('INSERT INTO team_pool_defaults VALUES (?,?,?)',(m,g,v))
+            for project,a,b in self.ledger.db.execute('SELECT id,ceiling_a,ceiling_b FROM team_projects'):
+                for g,v in (('A',a),('B',b)):self.ledger.db.execute('INSERT INTO team_pool_projects VALUES (?,?,?)',(project,g,v))
+
+    def _default(self,member,group):
+        row=self.ledger.db.execute('SELECT ceiling FROM team_pool_defaults WHERE member=? AND group_id=?',(member,group)).fetchone()
+        if not row:raise Denied('Member pool policy is missing.',code='team_state_invalid')
+        return row[0]
+
     @classmethod
-    def initialize(cls, root, organization, baseline_a, baseline_b, *, all_traffic=False, clock=time.time):
+    def initialize(cls, root, organization, baseline_a=None, baseline_b=None, *, all_traffic=False, clock=time.time):
         lease=_upgrade_lease(Path(root).parent)
         descriptor=os.open(Path(root).parent/'session.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
         session=os.fdopen(descriptor,'a+b')
@@ -112,16 +133,19 @@ class Team:
         finally:session.close();lease.close()
 
     @classmethod
-    def _initialize(cls, root, organization, baseline_a, baseline_b, *, all_traffic=False, clock=time.time):
+    def _initialize(cls, root, organization, baseline_a=None, baseline_b=None, *, all_traffic=False, clock=time.time):
         root = Path(root)
         if not all_traffic:
             raise Denied('Confirm that every caller in this organization will use this coordinator. Independent gateways cannot share the same pool safely.', code='organization_usage_unknown')
         if not isinstance(organization,str) or not re.fullmatch(r'org-[A-Za-z0-9_-]{4,100}',organization):
             raise Denied('Use the organization ID from API settings.',code='team_configuration_invalid')
-        baseline = _limits(baseline_a,baseline_b)
+        p=load_policy(root.parent) if (root.parent/'verification.json').exists() else legacy()
+        ceilings=policy_limits(p)
+        baseline = _limits(baseline_a,baseline_b,ceilings=ceilings)
         if root.exists(): raise Denied('A coordinator directory already exists. No ledger was reset.',code='team_already_initialized')
         _private_directory(root,create=True)
         for name in ('state','members','projects','invites'): _private_directory(root/name,create=True)
+        atomic_json(root/'policy.json',p)
         ledger = Ledger(root/'state',initialize=True,clock=clock)
         try:
             day = dt.datetime.fromtimestamp(clock(),dt.timezone.utc).strftime('%Y-%m-%d')
@@ -144,8 +168,8 @@ class Team:
                 for statement in schema.split(';'):
                     if statement.strip():ledger.db.execute(statement)
                 ledger.db.execute('INSERT INTO team_config VALUES (?,?,0)',(uuid.uuid4().hex,organization))
-                for group in ('A','B'):
-                    ledger.db.execute('INSERT INTO budgets VALUES (?,?,?,?)',('openai:'+group,day,DAILY_LIMITS[group],baseline[group]))
+                for group in ceilings:
+                    ledger.db.execute('INSERT INTO budgets VALUES (?,?,?,?)',('openai:'+group,day,ceilings[group],baseline[group]))
                 ledger.db.execute('UPDATE meta SET paused=0')
         finally: ledger.close()
         return cls(root,clock=clock)
@@ -181,12 +205,12 @@ class Team:
 
     def _ensure_day(self, day):
         """Call inside the one witnessed write transaction; defaults never add twice."""
-        for group in ('A','B'):
+        for group in self.limits:
             row=self.ledger.db.execute('SELECT ceiling FROM budgets WHERE scope=? AND period=?',('openai:'+group,day)).fetchone()
-            if row is None:self.ledger.db.execute('INSERT INTO budgets VALUES (?,?,?,0)',('openai:'+group,day,DAILY_LIMITS[group]))
-            elif row[0]!=DAILY_LIMITS[group]:raise Denied('The organization budget differs from its safety policy.',code='team_state_invalid')
-        for member,a,b in self.ledger.db.execute('SELECT id,default_a,default_b FROM team_members'):
-            for group,amount in (('A',a),('B',b)):
+            if row is None:self.ledger.db.execute('INSERT INTO budgets VALUES (?,?,?,0)',('openai:'+group,day,self.limits[group]))
+            elif row[0]!=self.limits[group]:raise Denied('The organization budget differs from its safety policy.',code='team_state_invalid')
+        for member,group,amount in self.ledger.db.execute('SELECT member,group_id,ceiling FROM team_pool_defaults'):
+            if group in self.limits:
                 self.ledger.db.execute('INSERT OR IGNORE INTO team_allocations VALUES (?,?,?,?)',(day,member,group,amount))
 
     def _used(self, column, identity, group, day):
@@ -202,15 +226,15 @@ class Team:
         row=self.ledger.db.execute('SELECT ceiling FROM team_allocations WHERE period=? AND member=? AND group_id=?',(day,member,group)).fetchone()
         if row:return row[0]
         info=self._member(member,active=False)
-        return info[3 if group=='A' else 4]
+        return self._default(member,group)
 
     def _pool(self, member, group, day):
         info=self._member(member)
         project=info[0]
-        global_info=pool_info(self.ledger.db,group,DAILY_LIMITS[group],day)
+        global_info=pool_info(self.ledger.db,group,self.limits[group],day)
         ceiling=self._allocation(member,group,day)
         used=self._used('member',member,group,day)
-        project_ceiling=self.ledger.db.execute('SELECT ceiling_a,ceiling_b FROM team_projects WHERE id=?',(project,)).fetchone()[0 if group=='A' else 1]
+        project_ceiling=self.ledger.db.execute('SELECT ceiling FROM team_pool_projects WHERE project=? AND group_id=?',(project,group)).fetchone()[0]
         project_used=self._used('project',project,group,day)
         return {'group':group,'period':day,'limit':ceiling,'used_or_reserved':used,'baseline':0,
                 'remaining':max(0,min(ceiling-used,global_info['remaining'],project_ceiling-project_used)),
@@ -221,28 +245,28 @@ class Team:
             day=self.day()
             if json.loads((self.ledger.root/'ledger-witness.json').read_text())!=self.ledger._head():
                 raise Denied('The shared ledger cannot be verified. No quota was reset.',code='quota_reconciliation_required')
-            pools={group:self._pool(member,group,day) for group in ('A','B')}
+            pools={group:self._pool(member,group,day) for group in self.limits}
             return {'period':day,'coordinator_id':self.coordinator_id,'member_id':member,
                     'observed_at':dt.datetime.fromtimestamp(self.clock(),dt.timezone.utc).isoformat(),
                     'reset_at':(dt.datetime.strptime(day,'%Y-%m-%d').replace(tzinfo=dt.timezone.utc)+dt.timedelta(days=1)).isoformat(),
-                    'project_id':self._member(member)[0],'daily_pools':pools,'quota_guard':True,
+                    'policy_digest':policy_digest(self.policy),'project_id':self._member(member)[0],'daily_pools':pools,'quota_guard':True,
                     'ledger_paused':bool(self.ledger.db.execute('SELECT paused FROM meta').fetchone()[0]),
                     'safety_stop':(self.ledger.root/'safety-stop.json').exists(),
                     'recorded_requests':self.ledger.db.execute('SELECT COUNT(*) FROM requests r JOIN team_requests t ON r.id=t.id WHERE t.member=?',(member,)).fetchone()[0],
                     'unresolved_requests':self.ledger.db.execute("SELECT COUNT(*) FROM requests r JOIN team_requests t ON r.id=t.id WHERE t.member=? AND r.phase IN ('reserved','unknown')",(member,)).fetchone()[0],
-                    'usage_lines':[f"{g} ({POOL_LABELS[g]}): {pools[g]['remaining']:,} / {pools[g]['limit']:,} tokens remaining" for g in ('A','B')]}
+                    'usage_lines':usage_lines(self.policy,pools)}
 
     def notices(self, member):
         with self.mutex:
             day=self.day();pending=[]
             with self.ledger.transaction():
-                for group in ('A','B'):
+                for group in self.limits:
                     pool=self._pool(member,group,day)
-                    if pool['limit']==0 or pool['used_or_reserved']*10<pool['limit']*9:continue
+                    if pool['limit']==0 or pool['used_or_reserved']*100<pool['limit']*self.policy['warning_percent']:continue
                     if self.ledger.db.execute('SELECT 1 FROM team_notices WHERE period=? AND member=? AND group_id=?',(day,member,group)).fetchone():continue
                     self.ledger.db.execute('INSERT INTO team_notices VALUES (?,?,?)',(day,member,group))
-                    pending.append({'group':group,'period':day,'threshold':90,'remaining':pool['remaining'],
-                        'message':f"API quota warning - Group {group}: 90%+ used or reserved; {pool['remaining']:,} tokens left. Ask the team owner for an allocation change, or wait until 00:00 UTC."})
+                    pending.append({'group':group,'period':day,'threshold':self.policy['warning_percent'],'remaining':pool['remaining'],
+                        'message':f"API quota warning - Group {group}: {self.policy['warning_percent']}%+ used or reserved; {pool['remaining']:,} tokens left. Ask the team owner for an allocation change, or wait until 00:00 UTC."})
             return pending
 
     def _action(self, operation, payload, apply):
@@ -264,21 +288,21 @@ class Team:
             self.ledger.db.execute('INSERT INTO team_actions VALUES (?,?,?)',(operation,digest,canonical(outcome).decode()))
             return outcome
 
-    def add_member(self, member, project, a, b):
+    def add_member(self, member, project, a=None, b=None):
         self._mutable()
-        _identifier(member);_identifier(project,'project');limits=_limits(a,b)
+        _identifier(member);_identifier(project,'project');limits=_limits(a,b,ceilings=self.limits)
         directory=self.root/'members'/member
         if directory.exists() or (self.root/'invites'/(member+'.json')).exists():
             raise Denied('Member files already exist; no credential was overwritten.',code='team_member_exists')
         token=secrets.token_urlsafe(48)
         with self.mutex:
             if self.ledger.db.execute('SELECT 1 FROM team_members WHERE id=?',(member,)).fetchone():raise Denied('The member already exists.',code='team_member_exists')
-            totals=self.ledger.db.execute('SELECT COALESCE(SUM(default_a),0),COALESCE(SUM(default_b),0) FROM team_members').fetchone()
-            if any(totals[i]+limits[g]>DAILY_LIMITS[g] for i,g in enumerate(('A','B'))):
+            totals=[self.ledger.db.execute('SELECT COALESCE(SUM(ceiling),0) FROM team_pool_defaults WHERE group_id=?',(g,)).fetchone()[0] for g in self.limits]
+            if any(totals[i]+limits[g]>self.limits[g] for i,g in enumerate(self.limits)):
                 raise Denied('Default allocations would exceed the organization safety pool.',code='team_allocation_invalid')
             day=self.day()
-            current=[sum(self._allocation(m,g,day) for (m,) in self.ledger.db.execute('SELECT id FROM team_members')) for g in ('A','B')]
-            if any(current[i]+limits[g]>DAILY_LIMITS[g] for i,g in enumerate(('A','B'))):
+            current=[sum(self._allocation(m,g,day) for (m,) in self.ledger.db.execute('SELECT id FROM team_members')) for g in self.limits]
+            if any(current[i]+limits[g]>self.limits[g] for i,g in enumerate(self.limits)):
                 raise Denied('Today\'s existing allocations leave insufficient capacity for this member.',code='team_allocation_invalid')
             _private_directory(directory,create=True)
             project_directory=_private_directory(self.root/'projects'/project,create=True)
@@ -292,29 +316,32 @@ class Team:
                 with os.fdopen(descriptor,'w') as out:out.write('# Fill locally. Never share the OpenAI key with a member.\nOPENAI_API_KEY=\n')
             atomic_json(directory/'verification.json',{'openai':{'enabled':True,'verified':False,'billing_policy':'free_only',
                 'organization_id':self.organization_id,'project_id':project,'quota_guard':True,'org_exclusive':True,
-                'daily_token_limits':dict(DAILY_LIMITS),'output_token_cap':16384,
+                'policy':self.policy,
                 'count_endpoint_free_confirmed':False,'local_tool_inference_free_confirmed':False}})
             # Insert only after all private inputs exist. An interrupted setup fails
             # visibly and never replaces files or grants an unnamed member access.
             with self.ledger.transaction():
                 day=self.day();self._ensure_day(day)
-                current=[self.ledger.db.execute('SELECT COALESCE(SUM(ceiling),0) FROM team_allocations WHERE period=? AND group_id=?',(day,g)).fetchone()[0] for g in ('A','B')]
-                if any(current[i]+limits[g]>DAILY_LIMITS[g] for i,g in enumerate(('A','B'))):raise Denied('Today\'s existing allocations leave insufficient capacity for this member.',code='team_allocation_invalid')
-                self.ledger.db.execute('INSERT OR IGNORE INTO team_projects VALUES (?,?,?)',(project,DAILY_LIMITS['A'],DAILY_LIMITS['B']))
-                self.ledger.db.execute('INSERT INTO team_members VALUES (?,?,?,1,?,?)',(member,project,hashlib.sha256(token.encode()).hexdigest(),a,b))
-                for g in ('A','B'):self.ledger.db.execute('INSERT INTO team_allocations VALUES (?,?,?,?)',(day,member,g,limits[g]))
+                current=[self.ledger.db.execute('SELECT COALESCE(SUM(ceiling),0) FROM team_allocations WHERE period=? AND group_id=?',(day,g)).fetchone()[0] for g in self.limits]
+                if any(current[i]+limits[g]>self.limits[g] for i,g in enumerate(self.limits)):raise Denied('Today\'s existing allocations leave insufficient capacity for this member.',code='team_allocation_invalid')
+                self.ledger.db.execute('INSERT OR IGNORE INTO team_projects VALUES (?,?,?)',(project,self.limits.get('A',0),self.limits.get('B',0)))
+                for g,n in self.limits.items():self.ledger.db.execute('INSERT OR IGNORE INTO team_pool_projects VALUES (?,?,?)',(project,g,n))
+                self.ledger.db.execute('INSERT INTO team_members VALUES (?,?,?,1,?,?)',(member,project,hashlib.sha256(token.encode()).hexdigest(),limits.get('A',0),limits.get('B',0)))
+                for g in self.limits:
+                    self.ledger.db.execute('INSERT INTO team_pool_defaults VALUES (?,?,?)',(member,g,limits[g]))
+                    self.ledger.db.execute('INSERT INTO team_allocations VALUES (?,?,?,?)',(day,member,g,limits[g]))
                 self.ledger.db.execute('UPDATE team_config SET revision=revision+1')
             self._write_invite(member,token)
         return {'member_id':member,'project_id':project,'key_file':str(key_path),'invite_file':str(self.root/'invites'/(member+'.json')),'billing_policy':'free_only'}
 
-    def transfer(self, donor, recipient, a, b, *, operation, revision=None):
-        _identifier(donor);_identifier(recipient);amounts=_limits(a,b)
+    def transfer(self, donor, recipient, a=None, b=None, *, operation, revision=None):
+        _identifier(donor);_identifier(recipient);amounts=_limits(a,b,ceilings=self.limits)
         if donor==recipient or not any(amounts.values()):raise Denied('Choose distinct members and a positive transfer.',code='team_allocation_invalid')
         def apply(day):
             self._member(donor,active=False);self._member(recipient)
             current=self.ledger.db.execute('SELECT revision FROM team_config').fetchone()[0]
             if revision is not None and revision!=current:raise Denied('Allocations changed; review the current values before retrying.',code='team_revision_conflict',status=409)
-            for g in ('A','B'):
+            for g in self.limits:
                 donor_limit=self._allocation(donor,g,day)
                 if donor_limit-amounts[g]<self._used('member',donor,g,day):
                     raise Denied('The donor has already used or reserved these tokens. No allocation was changed.',code='team_transfer_unavailable',status=409)
@@ -325,22 +352,24 @@ class Team:
                 'expires_at':(dt.datetime.strptime(day,'%Y-%m-%d')+dt.timedelta(days=1)).strftime('%Y-%m-%dT00:00:00Z')}
         return self._action(operation,{'kind':'transfer','from':donor,'to':recipient,'tokens':amounts,'revision':revision},apply)
 
-    def defaults(self, member, a, b, *, operation):
-        _identifier(member);limits=_limits(a,b)
+    def defaults(self, member, a=None, b=None, *, operation):
+        _identifier(member);limits=_limits(a,b,ceilings=self.limits)
         def apply(day):
             self._member(member,active=False)
-            totals=self.ledger.db.execute('SELECT COALESCE(SUM(default_a),0),COALESCE(SUM(default_b),0) FROM team_members WHERE id!=?',(member,)).fetchone()
-            if any(totals[i]+limits[g]>DAILY_LIMITS[g] for i,g in enumerate(('A','B'))):raise Denied('Default allocations would exceed the safety pool.',code='team_allocation_invalid')
-            self.ledger.db.execute('UPDATE team_members SET default_a=?,default_b=? WHERE id=?',(a,b,member))
+            totals=[self.ledger.db.execute('SELECT COALESCE(SUM(ceiling),0) FROM team_pool_defaults WHERE member!=? AND group_id=?',(member,g)).fetchone()[0] for g in self.limits]
+            if any(totals[i]+limits[g]>self.limits[g] for i,g in enumerate(self.limits)):raise Denied('Default allocations would exceed the safety pool.',code='team_allocation_invalid')
+            for g,n in limits.items():self.ledger.db.execute('UPDATE team_pool_defaults SET ceiling=? WHERE member=? AND group_id=?',(n,member,g))
+            self.ledger.db.execute('UPDATE team_members SET default_a=?,default_b=? WHERE id=?',(limits.get('A',0),limits.get('B',0),member))
             return {'member_id':member,'defaults':limits,'effective':'next UTC day; today is unchanged'}
         return self._action(operation,{'kind':'defaults','member':member,'tokens':limits},apply)
 
-    def project_limits(self, project, a, b, *, operation):
-        _identifier(project,'project');limits=_limits(a,b)
+    def project_limits(self, project, a=None, b=None, *, operation):
+        _identifier(project,'project');limits=_limits(a,b,ceilings=self.limits)
         def apply(day):
             if not self.ledger.db.execute('SELECT 1 FROM team_projects WHERE id=?',(project,)).fetchone():raise Denied('Unknown project.',code='team_project_unknown')
-            if any(limits[g]<self._used('project',project,g,day) for g in ('A','B')):raise Denied('The project already used or reserved more than this limit.',code='team_transfer_unavailable',status=409)
-            self.ledger.db.execute('UPDATE team_projects SET ceiling_a=?,ceiling_b=? WHERE id=?',(a,b,project))
+            if any(limits[g]<self._used('project',project,g,day) for g in self.limits):raise Denied('The project already used or reserved more than this limit.',code='team_transfer_unavailable',status=409)
+            for g,n in limits.items():self.ledger.db.execute('UPDATE team_pool_projects SET ceiling=? WHERE project=? AND group_id=?',(n,project,g))
+            self.ledger.db.execute('UPDATE team_projects SET ceiling_a=?,ceiling_b=? WHERE id=?',(limits.get('A',0),limits.get('B',0),project))
             return {'project_id':project,'limits':limits,'effective':'immediate and subsequent UTC days'}
         return self._action(operation,{'kind':'project_limits','project':project,'tokens':limits},apply)
 
@@ -380,7 +409,7 @@ class Team:
         self._mutable()
         if not isinstance(payload,dict) or set(payload)!={'request_id','group','amount'}:raise Denied('Use request_id, group and amount.',code='team_request_invalid')
         identity=payload['request_id'];group=payload['group'];amount=payload['amount']
-        if not isinstance(identity,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{16,80}',identity) or group not in ('A','B') or type(amount) is not int or not 0<amount<=DAILY_LIMITS[group]:raise Denied('Invalid quota request.',code='team_request_invalid')
+        if not isinstance(identity,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{16,80}',identity) or group not in self.limits or type(amount) is not int or not 0<amount<=self.limits[group]:raise Denied('Invalid quota request.',code='team_request_invalid')
         with self.mutex,self.ledger.transaction():
             self._member(member);day=self.day()
             row=self.ledger.db.execute('SELECT member,period,group_id,amount,state FROM team_extra_requests WHERE id=?',(identity,)).fetchone()
@@ -395,7 +424,7 @@ class Team:
 
     def _write_invite(self,member,token):
         from team_ssh import invite_metadata
-        invite={'version':1,'coordinator_id':self.coordinator_id,'member_id':member,'endpoint':'http://127.0.0.1:'+str(DEFAULT_PORT),'token':token}
+        invite={'version':1,'coordinator_id':self.coordinator_id,'member_id':member,'endpoint':'http://127.0.0.1:'+str(DEFAULT_PORT),'token':token,'policy':self.policy,'policy_digest':policy_digest(self.policy)}
         ssh=invite_metadata(self.root)
         if ssh:
             invite['ssh']=ssh;invite['endpoint']='http://127.0.0.1:'+str(ssh['remote_port'])
@@ -442,9 +471,9 @@ class Team:
             day=self.day()
             return {'coordinator_id':self.coordinator_id,'organization_id':self.organization_id,'period':day,
                 'revision':self.ledger.db.execute('SELECT revision FROM team_config').fetchone()[0],
-                'organization_pools':{g:pool_info(self.ledger.db,g,DAILY_LIMITS[g],day) for g in ('A','B')},
-                'members':[{'member_id':m,'project_id':p,'active':bool(active),'defaults':{'A':a,'B':b},
-                    'today':{g:{'limit':self._allocation(m,g,day),'used_or_reserved':self._used('member',m,g,day)} for g in ('A','B')}}
+                'organization_pools':{g:pool_info(self.ledger.db,g,self.limits[g],day) for g in self.limits},
+                'members':[{'member_id':m,'project_id':p,'active':bool(active),'defaults':{g:self._default(m,g) for g in self.limits},
+                    'today':{g:{'limit':self._allocation(m,g,day),'used_or_reserved':self._used('member',m,g,day)} for g in self.limits}}
                     for m,p,active,a,b in self.ledger.db.execute('SELECT id,project,active,default_a,default_b FROM team_members ORDER BY id')],
                 'requests':[dict(zip(('request_id','member_id','period','group','amount','state'),r)) for r in self.ledger.db.execute('SELECT * FROM team_extra_requests ORDER BY period,id')]}
 
@@ -493,7 +522,7 @@ class MemberLedger:
 
     def daily_remaining(self, group, ceiling):
         self.team._mutable()
-        if group not in DAILY_LIMITS or ceiling!=DAILY_LIMITS[group]:raise Denied('Coordinator safety policy differs from its receipt.',code='team_state_invalid')
+        if group not in self.team.limits or ceiling!=self.team.limits[group]:raise Denied('Coordinator safety policy differs from its receipt.',code='team_state_invalid')
         with self.team.mutex:
             self.active()
             if (self.root/'safety-stop.json').exists():raise Denied('The coordinator needs usage reconciliation.',code='quota_reconciliation_required')
@@ -557,6 +586,8 @@ class MemberBroker(Broker):
         super().__init__(team.root/'members'/member,MemberLedger(team,member,credential_hash),transport,clock=team.clock)
         self.key_path=team.root/'projects'/team._member(member)[0]/'openai-key.env'
 
+    def policy(self,receipt=None):return self.team.policy
+
     def openai(self, payload, send_headers, send_chunk, cancelled=lambda:False, **options):
         return super().openai(payload,send_headers,send_chunk,
             cancelled=lambda:self.team.stopping.is_set() or cancelled(),**options)
@@ -608,9 +639,9 @@ def make_server(root, port=DEFAULT_PORT, transport=upstream, *, clock=time.time)
                 member=self.auth()
                 if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Encoding') or self.headers.get('Content-Length','0')!='0':
                     raise Denied('GET bodies and encoded requests are disabled.',code='team_headers_invalid')
-                if self.path=='/identity':return self.reply(200,{'service':SERVICE,'version':1,'coordinator_id':team.coordinator_id,'member_id':member,'project_id':team._member(member)[0]})
+                if self.path=='/identity':return self.reply(200,{'service':SERVICE,'version':1,'coordinator_id':team.coordinator_id,'member_id':member,'project_id':team._member(member)[0],'policy_digest':policy_digest(team.policy)})
                 if self.path=='/v1/quota':return self.reply(200,team.quota(member))
-                if self.path=='/v1/models':return self.reply(200,{'object':'list','data':[{'id':m,'object':'model'} for m in MODELS]})
+                if self.path=='/v1/models':return self.reply(200,{'object':'list','data':[{'id':m,'object':'model'} for m in team.policy['models']]})
                 raise Denied('Endpoint disabled')
             except Denied as error:self.fail(error)
             except Exception:self.fail(Denied('Shared state is unavailable. No quota was reset.',code='team_state_unavailable',status=503))
@@ -740,7 +771,7 @@ def _owner_call(root, action, arguments):
 def command(root, args):
     parser=argparse.ArgumentParser(prog='codex-api team')
     sub=parser.add_subparsers(dest='command',required=True)
-    init=sub.add_parser('init');init.add_argument('--organization',required=True);init.add_argument('--baseline-a',type=int,required=True);init.add_argument('--baseline-b',type=int,required=True);init.add_argument('--all-traffic-coordinated',action='store_true')
+    init=sub.add_parser('init');init.add_argument('--organization',required=True);init.add_argument('--baseline-a',type=int);init.add_argument('--baseline-b',type=int);init.add_argument('--baseline',action='append',default=[]);init.add_argument('--all-traffic-coordinated',action='store_true')
     serve=sub.add_parser('serve');serve.add_argument('--port',type=int,default=DEFAULT_PORT)
     share=sub.add_parser('share');share.add_argument('--listen',default='127.0.0.1');share.add_argument('--ssh-port',type=int,default=49202);share.add_argument('--coordinator-port',type=int,default=DEFAULT_PORT)
     sub.add_parser('status');sub.add_parser('allocations');sub.add_parser('requests')
@@ -751,14 +782,18 @@ def command(root, args):
     billing=member.add_parser('billing');billing.add_argument('member');choice=billing.add_mutually_exclusive_group(required=True);choice.add_argument('--allow-api-charges',action='store_true');choice.add_argument('--free-only',action='store_true')
     tunnel_key=member.add_parser('tunnel-key');tunnel_key.add_argument('member');tunnel_key.add_argument('--public-key',dest='public_key_file',required=True)
     transfer=sub.add_parser('transfer');transfer.add_argument('--from',dest='donor',required=True);transfer.add_argument('--to',dest='recipient',required=True);transfer.add_argument('--a',type=int,default=0);transfer.add_argument('--b',type=int,default=0);transfer.add_argument('--operation',default=None);transfer.add_argument('--revision',type=int)
-    defaults=sub.add_parser('defaults');defaults.add_argument('member');defaults.add_argument('--a',type=int,required=True);defaults.add_argument('--b',type=int,required=True);defaults.add_argument('--operation')
-    project=sub.add_parser('project-limit');project.add_argument('project');project.add_argument('--a',type=int,required=True);project.add_argument('--b',type=int,required=True);project.add_argument('--operation')
+    defaults=sub.add_parser('defaults');defaults.add_argument('member');defaults.add_argument('--a',type=int);defaults.add_argument('--b',type=int);defaults.add_argument('--operation')
+    project=sub.add_parser('project-limit');project.add_argument('project');project.add_argument('--a',type=int);project.add_argument('--b',type=int);project.add_argument('--operation')
     approve=sub.add_parser('approve');approve.add_argument('request_id');approve.add_argument('--from',dest='donor',required=True)
     reconcile=sub.add_parser('reconcile');review=reconcile.add_mutually_exclusive_group();review.add_argument('--template');review.add_argument('--apply')
+    for item in (add,transfer,defaults,project):item.add_argument('--tokens',action='append',default=[])
     parsed=parser.parse_args(args);team_root=Path(root)/'team'
     if parsed.command=='init':
-        team=Team.initialize(team_root,parsed.organization,parsed.baseline_a,parsed.baseline_b,all_traffic=parsed.all_traffic_coordinated)
-        try:result={'coordinator_id':team.coordinator_id,'state':'initialized','daily_token_limits':dict(DAILY_LIMITS),'safety_margin_percent':5}
+        from configuration import baselines
+        p=load_policy(root)
+        prior=baselines(parsed.baseline,p) if parsed.baseline else parsed.baseline_a
+        team=Team.initialize(team_root,parsed.organization,prior,None if parsed.baseline else parsed.baseline_b,all_traffic=parsed.all_traffic_coordinated)
+        try:result={'coordinator_id':team.coordinator_id,'state':'initialized','daily_token_limits':team.limits,'safety_margin_percent':team.policy['safety_margin_percent']}
         finally:team.close()
     elif parsed.command=='serve':
         if not 1024<=parsed.port<=65535:raise Denied('Choose a coordinator port from 1024 to 65535.')
@@ -787,6 +822,11 @@ def command(root, args):
                 elif action=='billing':values={'member':values['member'],'charges':values['allow_api_charges']}
                 elif action=='tunnel-key':action='tunnel_key'
             elif action=='project-limit':action='project_limits'
+            tokens=values.pop('tokens',[])
+            if tokens:
+                from configuration import baselines
+                if values.get('a') not in (None,0) or values.get('b') not in (None,0):raise Denied('Use named --tokens or legacy A/B flags, not both.')
+                values['a']=baselines(tokens,load_policy(root));values['b']=None
             if action in ('transfer','defaults','project_limits') and not values.get('operation'):values['operation']=uuid.uuid4().hex
             result=_owner_call(team_root,action,values)
     print(json.dumps(result,indent=2))

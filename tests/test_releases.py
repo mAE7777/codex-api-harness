@@ -23,9 +23,10 @@ class ReleaseTests(unittest.TestCase):
     setUp=install_fixtures.InstallTests.setUp
     tearDown=install_fixtures.InstallTests.tearDown
     install=install_fixtures.InstallTests.install
+    configure=install_fixtures.InstallTests.configure
 
     def initialized(self):
-        self.install()
+        self.install();self.configure()
         self.initial=(self.root/'current').readlink().name
         self.original={name:(self.root/name).read_bytes() for name in ('settings.json','openai-key.env','gateway.token','verification.json','state/usage.sqlite3','state/ledger-witness.json')}
 

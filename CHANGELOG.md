@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 — account-specific configuration
+
+- Empty new-install policy; reviewed per-account models, named daily UTC pools and limits. Recommended defaults are editable proposals; the original five-model A/B setup is opt-in.
+- One policy drives gateway validation, native catalog/defaults, reasoning preferences, usage, warnings and shared invitations. Explicit Standard/Fast/Flex/Ultrafast with model compatibility, bounded deadlines, no auto or paid fallback.
+- State-preserving owner policy changes with exact review, durable crash fences and replayable guest rendering. Existing accounts, keys, sessions, baselines and request history are retained.
+- Legacy installations keep their original policy and two English usage lines without rewriting verification. Normal startup and subscription isolation are unchanged.
+- Shared per-pool allocations use normalized tables and pinned policy digests. An initialized coordinator's policy replacement remains refused pending a reviewed migration; allocation controls remain available.
+- README and automated setup now distinguish example budgets, actual account eligibility and usable capacity after the safety margin.
+
+
 ## 0.2.0
 
 - Optional owner-Mac coordinator with atomic organization/project/member accounting, fixed allocations, live temporary transfers, quota requests/approvals, revocation, private invitations, and restricted encrypted forwarding.

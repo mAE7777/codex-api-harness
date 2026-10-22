@@ -14,7 +14,8 @@ import subprocess
 import sys
 import time
 
-from guard import Denied, MODELS, atomic_json, read_quota
+from guard import Denied, atomic_json, read_quota
+from policy import load as load_policy, limits as policy_limits, model_pools, verify_guest, PolicyError
 from gateway import credentials
 from workspace_policy import check_workspace
 
@@ -60,6 +61,8 @@ def blockers():
     if (ROOT/'team').exists() and not (ROOT/'team-client.json').exists():issues.append('This installation owns a shared coordinator. Start a separate joined client instead of an independent personal gateway.')
     try: integrity()
     except Exception: issues.append("Installation integrity has not been verified")
+    try: verify_guest(ROOT)
+    except (PolicyError,OSError,ValueError) as error:issues.append('Model and quota policy needs configuration or preparation: '+str(error))
     try: workspace_check()
     except Denied as error: issues.append(str(error))
     try:
@@ -144,7 +147,8 @@ def quota_snapshot():
     profile = json.loads((ROOT/'verification.json').read_text()).get('openai', {})
     if profile.get('quota_guard') is not True:
         raise Denied('Daily quota protection is not enabled; run codex-api doctor.', code='quota_state_unavailable')
-    result = read_quota(ROOT/'state', profile.get('daily_token_limits', {}))
+    p=load_policy(ROOT)
+    result = read_quota(ROOT/'state', policy_limits(p),policy=p)
     result['billing_policy'] = profile.get('billing_policy', 'free_only')
     return result
 
@@ -218,6 +222,7 @@ def doctor(as_json=False, bundle=False):
         from team_client import RemoteBroker
         check('Private team connection', lambda:RemoteBroker(ROOT).quota(), 'team_unavailable')
     else:check('Dedicated API key file', lambda: bool(credentials(ROOT/'openai-key.env').get('OPENAI_API_KEY')), 'invalid_api_key')
+    check('Owner and guest policy',lambda:verify_guest(ROOT),'policy_invalid')
     check('Quota ledger and limits', quota_snapshot, 'quota_state_unavailable')
     check('Subscription configuration unchanged', subscription_unchanged, 'subscription_config_changed')
     mode = runtime_state()
@@ -249,7 +254,8 @@ def doctor(as_json=False, bundle=False):
 def explain(code=None, as_json=False):
     from diagnostics import explanation
     if code == 'permissions':
-        result = {'workspace':str(WORKSPACE), 'models':list(MODELS), 'service_tier':'default',
+        p=load_policy(ROOT)
+        result = {'workspace':str(WORKSPACE), 'models':list(p['models']), 'service_tier':p['defaults']['service_tier'],
                   'host_credentials':'not mounted; real API keys stay on host', 'network':'local gateway; GET/HEAD only on registry.npmjs.org:443, pypi.org:443, files.pythonhosted.org:443',
                   'managed_hooks':'fixed local quota notices only; user, project and plugin hooks are skipped',
                   'sensitive_files':'native process-start read masks plus host checks before each model request; no project copy',
@@ -339,7 +345,7 @@ def show_noninteractive_notices():
             response=conn.getresponse();data=response.read(16385)
             if response.status!=200 or len(data)>16384:return
             notices=json.loads(data).get('notices',[])
-            if not isinstance(notices,list) or len(notices)>2:return
+            if not isinstance(notices,list) or len(notices)>8:return
             messages=[n.get('message') for n in notices if isinstance(n,dict)]
             if len(messages)!=len(notices) or not all(isinstance(m,str) and m.isascii() and m.startswith('API quota warning - Group ') and len(m)<=512 and not any(ord(c)<32 for c in m) for m in messages):return
             for message in messages:print(message,file=sys.stderr,flush=True)
@@ -382,11 +388,15 @@ def retire():
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["status", "usage", "doctor", "explain", "reconcile", "help", "start", "pause", "stop", "login", "prepare", "reset", "retire", "configure", "credentials", "billing", "team", "extensions", "protect", "upgrade"])
+    parser.add_argument("command", choices=["status", "usage", "doctor", "explain", "reconcile", "help", "start", "pause", "stop", "login", "prepare", "reset", "retire", "configure", "credentials", "billing", "policy", "team", "extensions", "protect", "upgrade"])
     parser.add_argument("agent_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    if args.agent_args and args.command not in {'start','doctor','explain','reconcile','configure','prepare','billing','credentials','team','extensions','protect','upgrade'} and not (args.command in {'status','usage'} and args.agent_args==['--json']): parser.error("This maintenance command does not accept these arguments")
+    # Pre-0.3 launchers route unknown words through start; retain that launcher
+    # verbatim while recognizing the new owner-only policy command here.
+    if args.command=='start' and args.agent_args[:1]==['policy']:args.command='policy';args.agent_args=args.agent_args[1:]
+    if args.agent_args and args.command not in {'start','doctor','explain','reconcile','configure','prepare','billing','policy','credentials','team','extensions','protect','upgrade'} and not (args.command in {'status','usage'} and args.agent_args==['--json']): parser.error("This maintenance command does not accept these arguments")
     try:
+        if (ROOT/'policy-pending.json').exists() and args.command not in {'policy','status','usage','doctor','explain','stop','pause','help'}:raise Denied('Repeat the original reviewed policy apply before changing this installation.',code='policy_change_pending')
         if (ROOT/'upgrade-pending.json').exists() and args.command not in {'upgrade','status','usage','doctor','explain','stop','pause','help'}:
             raise Denied('Complete codex-api upgrade recover before changing this installation.',code='upgrade_recovery_required')
         if args.command in {'status','usage'}: status(as_json=args.agent_args==['--json'],usage_only=args.command=='usage')
@@ -419,7 +429,7 @@ def main():
                 keygen(ROOT)
             elif args.agent_args[:1]==['request']:
                 request_parser=argparse.ArgumentParser(prog='codex-api team request')
-                request_parser.add_argument('--group',choices=['A','B'],required=True)
+                request_parser.add_argument('--group',required=True)
                 request_parser.add_argument('--tokens',type=int,required=True)
                 request=request_parser.parse_args(args.agent_args[1:])
                 from team_client import RemoteBroker
@@ -445,6 +455,12 @@ def main():
                 wrapper=ROOT/'bin/codex-api'
                 completed=subprocess.run([str(wrapper),'prepare'],env=clean_env())
                 return completed.returncode
+        elif args.command=='policy':
+            from configuration import command
+            if command(ROOT,args.agent_args):
+                configured=json.loads((ROOT/'verification.json').read_text()).get('openai',{}).get('account_configured')
+                if configured or (ROOT/'sandbox-created.json').exists():prepare()
+                else:print('Policy selected. Continue account configuration or coordinator setup before preparing a client sandbox.')
         elif args.command=='billing':
             from onboarding import billing
             billing(ROOT,args.agent_args)
@@ -466,6 +482,8 @@ def main():
     except Denied as error:
         print(str(error), file=sys.stderr)
         return 1
+    except PolicyError as error:
+        print('API Codex policy: '+str(error)+' Run codex-api policy show or follow SETUP.md; no request was sent.',file=sys.stderr);return 1
     except (OSError, ValueError, KeyError, sqlite3.Error):
         print('API Codex: local state is unavailable. Run codex-api doctor; no usage was reset.',file=sys.stderr)
         return 1

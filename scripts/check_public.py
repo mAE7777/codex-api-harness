@@ -2,12 +2,13 @@
 """Check the exact tracked release surface without opening any private key file."""
 from pathlib import Path
 import re
+import json
 import subprocess
 import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 FORBIDDEN_NAMES={'settings.json','verification.json','readiness.json','installation.json','gateway.token','auth.json','openai-key.env','search-keys.env','docker-login.env',
-                 'team-client.json','protected-paths.json','ledger-witness.json','upgrade-pending.json','last-key-rotation.json','authorized_keys','sshd_config'}
+                 'policy-draft.json','policy-pending.json','policy-render-pending.json','policy.json','team-policy.json','runtime-acceptance.json','protocol-acceptance.json','team-client.json','protected-paths.json','ledger-witness.json','upgrade-pending.json','last-key-rotation.json','authorized_keys','sshd_config'}
 PATTERNS={
     'host home path':rb'/(?:Users|home)/[A-Za-z0-9_.-]+/',
     'OpenAI key':rb'\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{28,}',
@@ -26,6 +27,11 @@ def check(paths,blobs=None):
         if path.is_symlink() or path.name in FORBIDDEN_NAMES or path.name.startswith(('team-known-hosts','team-tunnel.key')) or path.suffix in {'.log','.env','.sqlite3','.pem','.p12','.pfx','.key','.sock'} or any(p in {'state','backups','vendor','__pycache__','team','guest-state','extensions','releases','upgrades'} for p in relative.parts):
             failures.append((str(relative),'runtime, private, binary or linked artifact'));continue
         data=blobs[str(relative)] if blobs is not None else path.read_bytes()
+        if str(relative)=='kit/runtime-policy.json':
+            try:
+                empty=json.loads(data)
+                if empty!={'version':1,'reset':'daily_utc','safety_margin_percent':5,'warning_percent':90,'pools':{},'models':{},'defaults':{}}:failures.append((str(relative),'installed owner policy in public template'))
+            except (ValueError,UnicodeError):failures.append((str(relative),'invalid empty policy template'))
         if b'\x00' in data:failures.append((str(relative),'binary artifact'));continue
         # /home/agent is the public fixed guest home, not a host identity.
         scanned=data.replace(b'/home/agent/',b'/guest/')

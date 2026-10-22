@@ -9,15 +9,18 @@ import stat
 import uuid
 
 from guard import Denied, Ledger, atomic_json, read_quota, readonly_database
+from policy import load as load_policy, limits as policy_limits, PolicyError
 
 
 def inspect(root):
     profile = json.loads((root/'verification.json').read_text()).get('openai', {})
     result = {'verified':False, 'requests':[], 'safety_stop':(root/'state/safety-stop.json').exists()}
     try:
-        read_quota(root/'state', profile.get('daily_token_limits', {}))
+        p=load_policy(root)
+        read_quota(root/'state',policy_limits(p),policy=p)
         result['verified'] = True
     except Denied as error: result['state_error'] = error.code or 'quota_state_unavailable'
+    except (PolicyError,OSError):result['state_error']='policy_invalid'
     with readonly_database(root/'state') as db:
         db.execute('BEGIN')
         rows = db.execute("SELECT id,scope,period,reserved,phase FROM requests WHERE phase IN ('reserved','unknown','rejected') ORDER BY created").fetchall()
@@ -68,7 +71,9 @@ def apply(root, filename):
         if not (root/'paused').exists() or (root/'gateway-process.json').exists():
             raise Denied('Run codex-api stop before applying a receipt; no usage was changed')
         ledger = Ledger(root/'state')
-        try: return ledger.reconcile(plan)
+        try:
+            ledger.overlap_seconds=load_policy(root)['defaults']['request_deadline_seconds']+15
+            return ledger.reconcile(plan)
         finally: ledger.close()
 
 

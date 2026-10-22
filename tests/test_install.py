@@ -41,7 +41,7 @@ class InstallTests(unittest.TestCase):
         self.assertFalse((self.root/'openai-key.env').stat().st_mode&0o077)
         self.assertFalse((self.root/'gateway.token').stat().st_mode&0o077)
         v=json.loads((self.root/'verification.json').read_text());self.assertFalse(v['openai']['enabled']);self.assertEqual(v['openai']['billing_policy'],'free_only')
-        self.assertEqual(v['openai']['daily_token_limits'],DAILY_LIMITS)
+        self.assertEqual(v['openai']['policy']['models'],{});self.assertEqual(v['openai']['policy']['pools'],{})
         self.assertNotIn(str(self.home), (setup.SOURCE/'kit/config.toml').read_text())
 
     def test_rendered_paths_ports_and_quoting_are_valid(self):
@@ -54,7 +54,7 @@ class InstallTests(unittest.TestCase):
         self.assertIn(str(self.project),tomllib.loads((self.root/'kit/requirements.toml').read_text())['permissions']['filesystem']['deny_read'][0])
 
     def test_usage_after_install_is_two_english_lines_and_needs_no_key_or_sandbox(self):
-        self.install();before=(self.root/'state/usage.sqlite3').read_bytes()
+        self.install();self.configure();before=(self.root/'state/usage.sqlite3').read_bytes()
         r=subprocess.run([str(self.launcher),'usage'],capture_output=True,text=True,check=True)
         lines=r.stdout.splitlines();self.assertEqual(len(lines),2);self.assertTrue(r.stdout.isascii());self.assertTrue(lines[0].startswith('A ('));self.assertTrue(lines[1].startswith('B ('))
         self.assertEqual(before,(self.root/'state/usage.sqlite3').read_bytes())
@@ -141,8 +141,8 @@ class InstallTests(unittest.TestCase):
 
     def test_public_catalog_uses_authored_instructions_without_account_model_exports(self):
         models=json.loads((setup.SOURCE/'kit/models.json').read_text())['models']
-        self.assertEqual(len(models),5)
-        for model in models:
+        self.assertEqual(models,[])
+        for model in [json.loads((setup.SOURCE/'kit/model-template.json').read_text())]:
             self.assertNotIn('model_messages',model)
             self.assertTrue(model['base_instructions'].startswith('You are Codex, a coding assistant'))
             self.assertLess(len(model['base_instructions']),2000)

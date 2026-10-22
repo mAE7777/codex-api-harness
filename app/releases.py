@@ -363,6 +363,17 @@ def _compatible(manifest,report,*,rollback=False):
         if report.get(key)!=manifest.get(key):fail('Runtime pins changed. This updater preserves the tested runtime; review that runtime migration separately.')
 
 
+def _state_compatible(root,report):
+    # Older guards cannot interpret a generalized policy or normalized shared
+    # allocation tables. Retaining the guest kit alone cannot make them safe.
+    if _version(report['harness_version'])>=(0,3,0):return
+    root=Path(root)
+    receipt=_json(root/'verification.json').get('openai',{})
+    client=_json(root/'team-client.json') if (root/'team-client.json').exists() else {}
+    if receipt.get('policy',{}).get('models') or 'policy' in client or (root/'team').exists():
+        fail('This historical code cannot enforce the installed model/quota/tier policy or shared state. Keep version 0.3.0 or newer; credentials and usage were preserved.')
+
+
 def _render_requirements(payload, workspace, protected):
     """Use the reviewed candidate renderer, not the still-imported old module.
 
@@ -477,6 +488,8 @@ def _new_manifest(root,old,payload,release_id,report):
         files.update({name+'/'+p:d for p,d in _payload_tree(payload,name).items()})
     manifest.update(harness_version=report['harness_version'],files=files,layout_version=LAYOUT_VERSION,
                     active_release=release_id,source_digest=hashlib.sha256(canonical(report)).hexdigest())
+    if report.get('source_pin'):manifest['source_commit']=report['source_pin']
+    else:manifest.pop('source_commit',None)
     return manifest
 
 
@@ -506,8 +519,10 @@ def activate(root,digest,*,reviewed_digest,rollback=False):
     root=Path(root)
     if reviewed_digest!=digest:fail('Review the exact staged source, then pass its full digest with --reviewed-digest. Staging never executes candidate code.')
     with _stopped(root):
+        if any((root/n).exists() for n in ('policy-pending.json','policy-render-pending.json')):fail('Finish the pending owner policy change before upgrading code.')
         previous=validate_layout(root);old=_json(root/'installation.json');_verify_manifest(root,old)
         candidate,report,meta,files=_candidate(root,digest);_compatible(old,report,rollback=rollback)
+        _state_compatible(root,report)
         policy=_policy_digest(root);private_state=_permanent_fingerprint(root)
         checked=_run_checks(root,candidate,digest)
         # A candidate test is reviewed host code. Revalidate all permanent facts

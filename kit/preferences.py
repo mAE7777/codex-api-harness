@@ -9,11 +9,19 @@ import subprocess
 import sys
 import tomllib
 
-MODELS = {'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-terra', 'gpt-5.6-luna'}
-EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max', 'ultra'}
-ROOT_ENUMS = {'model': MODELS, 'model_reasoning_effort': EFFORTS,
-              'model_reasoning_summary': {'auto', 'concise', 'detailed', 'none'},
+POLICY_PATH = Path('/etc/codex-api/runtime-policy.json')
+ROOT_ENUMS = {'model_reasoning_summary': {'auto', 'concise', 'detailed', 'none'},
               'model_verbosity': {'low', 'medium', 'high'}}
+
+
+def model_policy():
+    # This owner-rendered file is root-owned and read-only in the image. An
+    # absent contract never silently restores a bundled model allowlist.
+    if POLICY_PATH.is_symlink() or not POLICY_PATH.is_file() or POLICY_PATH.stat().st_size>131072:
+        raise PolicyArgumentError('The protected model policy is unavailable. Run codex-api prepare in the host terminal.')
+    p=json.loads(POLICY_PATH.read_text())
+    if not isinstance(p,dict) or not isinstance(p.get('models'),dict) or not p['models'] or not isinstance(p.get('defaults'),dict):raise PolicyArgumentError('Invalid protected model policy.')
+    return p
 
 
 def allowed_workspace():
@@ -36,6 +44,8 @@ def validate_cli_args(args):
              '--sandbox-state-readable-root','--sandbox-state-disable-network'}
     trusted={'model_providers.quota_gateway.name="API Codex — isolated API gateway"',
              'skills.config=[{path="/home/agent/.codex-api/skills/.system/imagegen/SKILL.md",enabled=false}]'}
+    overrides={}
+    models=model_policy()['models']
     i=0
     while i<len(args):
         arg=args[i]
@@ -55,8 +65,9 @@ def validate_cli_args(args):
                 raise PolicyArgumentError('Only the protected API workspace permissions profile is allowed.')
             if flag in {'-C','--cd'} and not Path(value).resolve().is_relative_to(allowed_workspace()):
                 raise PolicyArgumentError('The working directory must stay inside the allowed API workspace.')
-            if flag in {'-m','--model'} and value not in MODELS:
-                raise PolicyArgumentError('Choose one of the five allowed API models.')
+            if flag in {'-m','--model'}:
+                if value not in models:raise PolicyArgumentError('Choose an owner-approved API model.')
+                overrides['model']=value
             if flag in {'-c','--config'} and value not in trusted:
                 key,sep,raw=value.partition('=')
                 if not sep or any(ord(c)<32 for c in value):raise PolicyArgumentError('Invalid preference override.')
@@ -64,18 +75,31 @@ def validate_cli_args(args):
                 except (ValueError,KeyError):parsed=raw
                 key=key.strip()
                 data={'tui':{key[4:]:parsed}} if key.startswith('tui.') else {key:parsed}
-                if select_preferences(data)!=data:raise PolicyArgumentError('Only allowed model, reasoning, and UI preferences can be overridden.')
+                if key.startswith('tui.'):
+                    if select_preferences(data)!=data:raise PolicyArgumentError('Unsupported UI preference.')
+                    overrides.setdefault('tui',{}).update(data['tui'])
+                else:overrides.update(data)
+                if key=='model' and (not isinstance(parsed,str) or parsed not in models):raise PolicyArgumentError('Choose an owner-approved API model.')
+                if key=='model_reasoning_effort' and (not isinstance(parsed,str) or parsed not in {e for row in models.values() for e in row['reasoning_efforts']}):raise PolicyArgumentError('Unsupported reasoning preference.')
+                if key in ROOT_ENUMS and select_preferences(data)!=data:raise PolicyArgumentError('Unsupported preference.')
+                if any(k not in {'model','model_reasoning_effort',*ROOT_ENUMS,'tui'} for k in data):raise PolicyArgumentError('Only allowed model, reasoning, and UI preferences can be overridden.')
         i+=1
+    checked=overrides if 'model' in overrides else {k:v for k,v in overrides.items() if k!='model_reasoning_effort'}
+    if select_preferences(checked)!=checked:raise PolicyArgumentError('The preference or model/reasoning combination is outside the owner policy.')
+    return overrides
 
 
 def select_preferences(data):
     result = {}
     if not isinstance(data, dict): return result
-    for key, allowed in ROOT_ENUMS.items():
+    p=model_policy();models=p['models']
+    enums={**ROOT_ENUMS,'model':set(models)}
+    for key, allowed in enums.items():
         if isinstance(data.get(key), str) and data[key] in allowed:
             result[key] = data[key]
-    if result.get('model') in {'gpt-6-luna', 'gpt-5.6-luna'} and result.get('model_reasoning_effort') == 'ultra':
-        result['model_reasoning_effort'] = 'max'
+    model=result.get('model',p['defaults']['model'])
+    if isinstance(data.get('model_reasoning_effort'),str) and data['model_reasoning_effort'] in models[model]['reasoning_efforts']:
+        result['model_reasoning_effort']=data['model_reasoning_effort']
     tui = data.get('tui', {})
     if isinstance(tui, dict):
         allowed_tui = {}
@@ -196,7 +220,7 @@ def protected_cli_args(config):
     return result
 
 
-def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=Path('/etc/codex-api/extensions'), *, return_policy=False):
+def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=Path('/etc/codex-api/extensions'), *, return_policy=False, cli_preferences=None):
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     pref_path = home/'preferences.json'
     prefs = {}
@@ -206,6 +230,13 @@ def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=
     # Native Codex writes /model and /statusline choices to its private config.
     # Only the preference allowlist is carried into the next protected config.
     prefs.update(select_preferences(read_config(home/'config.toml')))
+    p=model_policy();overrides=cli_preferences or {}
+    selected=overrides.get('model',prefs.get('model',p['defaults']['model']))
+    if 'model_reasoning_effort' in overrides and overrides['model_reasoning_effort'] not in p['models'][selected]['reasoning_efforts']:raise PolicyArgumentError('This reasoning effort is unsupported by the selected model.')
+    if overrides.get('tui'):prefs['tui']={**prefs.get('tui',{}),**overrides['tui']}
+    prefs.update({k:v for k,v in overrides.items() if k!='tui'});prefs=select_preferences(prefs)
+    if selected!=p['defaults']['model'] and 'model_reasoning_effort' not in prefs and p['defaults']['reasoning_effort'] not in p['models'][selected]['reasoning_efforts']:
+        prefs['model_reasoning_effort']=p['models'][selected]['reasoning_efforts'][0]
     base = base_path.read_text()
     # Hash-verified instructions are part of managed policy, never preferences.
     instructions=extension_instructions(managed_extensions(extensions_path))
@@ -226,7 +257,7 @@ def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=
         rendered += '\n[tui]\n' + ''.join(key + ' = ' + json.dumps(value) + '\n' for key, value in prefs['tui'].items())
     parsed = tomllib.loads(rendered)
     immutable = tomllib.loads(base)
-    for key in ROOT_ENUMS: parsed.pop(key, None); immutable.pop(key, None)
+    for key in (*ROOT_ENUMS,'model','model_reasoning_effort'): parsed.pop(key, None); immutable.pop(key, None)
     parsed.pop('tui', None)
     if parsed != immutable: raise ValueError('Preference merge changed protected policy')
     atomic_write(home/'config.toml', rendered)
@@ -237,8 +268,8 @@ def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=
 def run(args):
     home = Path(os.environ['CODEX_HOME'])
     if str(home) != '/home/agent/.codex-api': raise ValueError('Unexpected API Codex home')
-    validate_cli_args(args)
-    _,policy=prepare(home,return_policy=True)
+    overrides=validate_cli_args(args)
+    _,policy=prepare(home,return_policy=True,cli_preferences=overrides)
     child = None
     previous = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, lambda *_: None)

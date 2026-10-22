@@ -13,11 +13,15 @@ import uuid
 
 def request_more(args):
     parser=argparse.ArgumentParser(prog='codex-api team request',description='Ask the organization owner for more of today\'s shared quota.')
-    parser.add_argument('--group',required=True,choices=['A','B']);parser.add_argument('--tokens',required=True)
+    parser.add_argument('--group',required=True,);parser.add_argument('--tokens',required=True)
     options=parser.parse_args(args)
-    if not re.fullmatch(r'[1-9][0-9]{0,6}',options.tokens):parser.error('--tokens must be a positive whole number.')
+    if not re.fullmatch(r'[1-9][0-9]{0,12}',options.tokens):parser.error('--tokens must be a positive whole number.')
     amount=int(options.tokens)
-    if amount>{'A':237500,'B':2375000}[options.group]:parser.error('--tokens exceeds the supported daily group pool.')
+    try:policy=runpy.run_path('/etc/codex-api/preferences.py')['model_policy']()
+    except (OSError,ValueError,KeyError):
+        print('The protected quota policy is unavailable. Run codex-api doctor in the host terminal.',file=sys.stderr);return 1
+    ceilings={g:r['daily_tokens']*(100-policy['safety_margin_percent'])//100 for g,r in policy['pools'].items()}
+    if options.group not in ceilings or amount>ceilings[options.group]:parser.error('--group and --tokens must fit the approved daily pools.')
     token=os.environ.get('CODEX_GATEWAY_TOKEN','')
     if not token:
         print('API Codex quota: gateway credential is unavailable.',file=sys.stderr);return 1
@@ -31,7 +35,7 @@ def request_more(args):
         result=json.loads(data)
         if not isinstance(result,dict) or not isinstance(result.get('request_id'),str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,80}',result['request_id']) or result.get('state') not in {'pending','approved'}:raise ValueError()
         accepted_amount=result.get('amount',amount)
-        if type(accepted_amount) is not int or not 0<accepted_amount<={'A':237500,'B':2375000}[options.group]:raise ValueError()
+        if type(accepted_amount) is not int or not 0<accepted_amount<=ceilings[options.group]:raise ValueError()
         prefix='Existing quota request' if result.get('replayed') is True else 'Quota request submitted'
         suffix='The owner decides; your limit is unchanged until approval.' if result['state']=='pending' else 'This request has already been approved.'
         print(prefix+': '+result['request_id']+' (Group '+options.group+', '+str(accepted_amount)+' tokens; '+result['state']+'). '+suffix)
@@ -44,7 +48,7 @@ def request_more(args):
                 code=details.get('error',{}).get('code')
             except (OSError,ValueError,TypeError,AttributeError):code=None
             messages={'endpoint_disabled':'Quota requests are available only in shared mode.',
-                      'team_request_invalid':'Choose group A or B and a valid positive whole token amount.',
+                      'team_request_invalid':'Choose an approved pool and a valid positive whole token amount.',
                       'team_member_revoked':'Shared access was revoked. Contact the organization owner.',
                       'team_operation_conflict':'This request conflicts with an existing request. Check with the owner.'}
             print(messages.get(code,'Quota request was rejected. Run codex-api doctor in the host terminal.'),file=sys.stderr)
@@ -69,10 +73,10 @@ def main(args):
             print('Managed skill verification failed. Return to the host terminal and run codex-api extensions verify.',file=sys.stderr)
             return 1
     if args not in ([], ['usage'], ['usage','--json'], ['help'], ['--help']):
-        print('Guest command supports: codex-api usage [--json], codex-api extensions list [--json], codex-api team request --group A|B --tokens N. Use the host terminal for maintenance.', file=sys.stderr)
+        print('Guest command supports: codex-api usage [--json], codex-api extensions list [--json], codex-api team request --group POOL --tokens N. Use the host terminal for maintenance.', file=sys.stderr)
         return 2
     if args in (['help'], ['--help']):
-        print('codex-api usage [--json] — read local daily quota without a model request.\ncodex-api extensions list [--json] — show approved managed skills.\ncodex-api team request --group A|B --tokens N — ask the shared organization owner for more quota.')
+        print('codex-api usage [--json] — read local daily quota without a model request.\ncodex-api extensions list [--json] — show approved managed skills.\ncodex-api team request --group POOL --tokens N — ask the shared organization owner for more quota.')
         return 0
     token = os.environ.get('CODEX_GATEWAY_TOKEN', '')
     if not token:
@@ -85,8 +89,10 @@ def main(args):
         if len(data) > 32768: raise ValueError()
         result = json.loads(data)
         lines = result['usage_lines']
-        if len(lines) != 2 or not all(isinstance(line,str) and line.isascii() and '\n' not in line and '\r' not in line for line in lines): raise ValueError()
-        if not lines[0].startswith('A (') or not lines[1].startswith('B ('): raise ValueError()
+        if not isinstance(lines,list) or not 1<=len(lines)<=8 or not all(isinstance(line,str) and line.isascii() and '\n' not in line and '\r' not in line for line in lines): raise ValueError()
+        pools=result.get('daily_pools',{})
+        if not isinstance(pools,dict) or len(pools)!=len(lines) or any(not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,15}',g) for g in pools):raise ValueError()
+        if any(not line.startswith(g+' (') for g,line in zip(pools,lines)):raise ValueError()
         print(json.dumps(result, indent=2) if '--json' in args else '\n'.join(lines))
         return 0
     except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError):

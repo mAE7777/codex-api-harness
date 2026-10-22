@@ -26,6 +26,8 @@ spec.loader.exec_module(preferences)
 
 class PreferenceTests(unittest.TestCase):
     def setUp(self):
+        from policy import legacy
+        self.policy_patch=patch.object(preferences,'model_policy',return_value=legacy());self.policy_patch.start();self.addCleanup(self.policy_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.home = Path(self.temp.name)/'private'; self.home.mkdir()
         self.base = Path(__file__).parents[1]/'kit/config.toml'
@@ -243,7 +245,7 @@ class DiagnosticTests(DailyFixture):
         data=json.loads((self.root/'verification.json').read_text());data['openai']['count_endpoint_free_confirmed']=False
         atomic_json(self.root/'verification.json',data)
         atomic_json(self.root/'readiness.json',{k:True for k in ('filesystem_tested','network_tested','host_integrations_absent')})
-        with patch.object(controller,'ROOT',self.root),patch.object(controller,'integrity'),patch.object(controller,'workspace_check'),patch.object(controller,'runtime_state',return_value='stopped'),patch.object(controller,'subscription_unchanged',return_value=True),contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(controller,'ROOT',self.root),patch.object(controller,'verify_guest'),patch.object(controller,'integrity'),patch.object(controller,'workspace_check'),patch.object(controller,'runtime_state',return_value='stopped'),patch.object(controller,'subscription_unchanged',return_value=True),contextlib.redirect_stdout(io.StringIO()):
             result=controller.doctor(bundle=True)
         self.assertTrue(result['passed']);self.assertEqual(self.calls,[])
         self.assertTrue(any(c['status']=='WARN' for c in result['checks']))

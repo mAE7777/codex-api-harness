@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from guard import Denied, atomic_json
 from shared import Team, make_server
@@ -273,7 +274,10 @@ class NativeTeamSSHTests(unittest.TestCase):
                 stopping.set();listener.close();thread.join(timeout=2)
 
     def test_public_keygen_join_relay_rotation_and_local_owner_flow_with_spaces(self):
-        from team_client import command as join, keygen, private_json, RemoteBroker
+        from team_client import command as real_join, keygen, private_json, RemoteBroker
+        def join(root,args):
+            from policy import digest,legacy
+            with patch('configuration.refresh_guest',return_value=False):return real_join(root,[*args,'--reviewed-policy-digest',digest(legacy())])
         client_root=self.directory/'Client Application Support';client_root.mkdir(mode=0o700)
         workspace=self.directory/'member-workspace';workspace.mkdir(mode=0o700)
         atomic_json(client_root/'settings.json',{'workspace':str(workspace)})

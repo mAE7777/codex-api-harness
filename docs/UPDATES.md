@@ -36,3 +36,7 @@ Recovery validates the selected code and permanent policy, preserves the current
 If a candidate prevents the normal command from opening, run `python3 setup.py recover --home "/absolute/private/installation"` from a trusted source checkout. Add `--finish` only to finish the reviewed candidate. This uses the same stopped-session checks and leaves the current ledger in place.
 
 The host owner can deliberately modify both code and local records. Local hashes and journals detect mistakes and incomplete updates; they are not protection against a malicious host owner or simultaneous restoration of every authority file.
+
+## Policy compatibility
+
+Version 0.3 uses a generalized model/quota/tier contract and normalized shared allocation tables. Code older than 0.3 cannot enforce those states; rollback to it is refused when a modern policy or coordinator is present. A personal pre-0.3 installation kept on its untouched legacy policy can still select a compatible retained old generation. No rollback restores an old usage database or credential file. Finish a pending policy change before staging activation.
