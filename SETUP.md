@@ -10,7 +10,7 @@ Run from this checkout:
 python3 setup.py inspect --json
 ```
 
-This reads OS/architecture, Python and sandbox versions, command conflicts, PATH membership, and whether an existing subscription config or harness exists. It does not read auth files, environment values, repository contents, or credentials. To locate missing tools, use command lookup and version checks; do not dump the shell environment or scan the user's whole disk.
+This reports the operating system, architecture, Python and sandbox versions, command conflicts, and PATH membership. It also checks for an existing subscription config or API installation. It does not read auth files, environment values, repository contents, or credentials. Locate missing tools through command lookup and version checks. Do not dump the shell environment or scan the user's whole disk.
 
 Supported release: macOS on Apple Silicon, Python 3.11.8+, Docker Sandboxes 0.49.1. On an unsupported OS, cloud executor, or machine without local access, stop and explain how to open the repository on the target Mac. Do not silently switch to a normal Docker container or host Codex.
 
@@ -46,7 +46,7 @@ The installer is resumable: rerunning with the same settings verifies and preser
 
 ## 3. Choose mode and the account-specific policy
 
-First ask whether this is **personal mode**, **coordinator owner**, or **joining a shared organization**. Personal mode is the simplest default. For shared mode, follow [SHARED.md](docs/SHARED.md) now, then return to sandbox preparation and handover below. A joining member does not need an OpenAI key or a personal account configuration. Never request an unnecessary key just because the installer created a blank file.
+First ask whether this is **personal mode**, **coordinator owner**, or **joining a shared organization**. Recommend personal mode for one person on one computer. For shared mode, follow [SHARED.md](docs/SHARED.md), then return to sandbox preparation and handover below. A joining member does not need an OpenAI key or personal account configuration. Never request an unnecessary key because the installer created a blank file.
 
 ### Personal mode or coordinator owner: choose the policy first
 
@@ -54,11 +54,11 @@ Create a private draft with `codex-api policy template`. Do not apply it unchang
 
 Ask one short group of questions, with recommended choices first:
 
-- Which models should be available? Offer one suitable model first, then alternatives. Verify each exact model's Responses/local-tool support, context/output bounds, reasoning efforts and service tiers using current official documentation. An owner-reviewed additional model ID needs no source edit. A key's `/models` list does not prove tool compatibility or free eligibility; do not call it merely to avoid asking the owner, or enable a model from that list alone.
+- Which models should be available? Offer one suitable model first, then alternatives. Verify each model's Responses API, local tools, context and output bounds, reasoning efforts, and service tiers against current official documentation. Native CLI effort names are not evidence of API support. An owner-reviewed model ID needs no source edit. A key's `/models` list does not prove tool compatibility or free eligibility. Do not call it to avoid asking the owner, or enable a model from that list alone.
 - What are the actual shared allowance pools and today's prior input plus output usage? Never assume the sample allowance is free. Assign models that share one allowance to the same pool. Support 1–8 pools, not a mandatory A/B pair. Only daily UTC reset is supported; explain if their allowance uses another period and choose a separately justified conservative daily budget.
 - Which speed tier? Recommend Standard initially. Offer Fast, Flex or Ultrafast only when supported by every selected model and permitted by their API project. Explain the cost/availability consequence. Flex recommends a 900-second deadline; other defaults use 600. There is one fixed selected tier per installation; auto and automatic tier fallback stay disabled.
 
-Edit only the private draft using the owner's choices and verified metadata. Keep its English pool labels short. Set an output reservation cap that fits every selected model. Run `codex-api policy check ABSOLUTE_DRAFT_PATH`; explain the selected models, tier, effective ceilings after the margin, and 00:00 UTC reset in a few sentences. The digest is local consistency/review evidence, not an API entitlement check. The setup agent may pass the exact digest after the owner has already authorized those choices; do not add a second approval just for the hash.
+Edit only the private draft using the owner's choices and verified metadata. Keep its English pool labels short. Set an output reservation cap that fits every selected model. Run `codex-api policy check ABSOLUTE_DRAFT_PATH`. Explain the models, tier, ceilings after the margin, and 00:00 UTC reset in a few sentences. The digest identifies the reviewed policy. It does not prove API entitlement. The setup agent may pass that digest after the owner has authorized those choices. Do not add another approval for the hash alone.
 
 For a coordinator owner, apply this reviewed policy with one explicit `--baseline POOL=TOKENS` per pool before `team init`; no OpenAI key or client VM is needed for this policy selection. Coordinator initialization requires the actual full organization baselines again, including any earlier personal traffic. Its policy is then pinned in this release. Allocation changes remain available; policy replacement is refused instead of resetting a shared ledger. Use named pools in SHARED.md.
 

@@ -33,6 +33,35 @@ def profile(tier='default',groups=('Daily',)):
 
 
 class SchemaTests(unittest.TestCase):
+    def test_shared_amount_errors_name_tokens_instead_of_account_baselines(self):
+        p=profile()
+        for items in (['Unknown=1'],[],['Daily=95001']):
+            with self.subTest(items=items),self.assertRaises(Denied) as error:configuration.baselines(items,p,flag='--tokens')
+            self.assertNotIn('prior usage',str(error.exception).lower())
+            self.assertNotIn('--baseline',str(error.exception))
+
+    def test_shared_init_rejects_mixed_baseline_flags_before_state_creation(self):
+        import shared
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(Denied):shared.command(Path(tmp),['init','--organization','org-fixture','--baseline','Daily=0','--baseline-a','100','--all-traffic-coordinated'])
+            self.assertFalse((Path(tmp)/'team').exists())
+
+    def test_legacy_efforts_match_conservative_api_subset_without_mutating_receipt(self):
+        receipt={'daily_token_limits':{'A':12345,'B':23456},'output_token_cap':1000}
+        before=copy.deepcopy(receipt)
+        p=policy.from_receipt(receipt)
+        self.assertEqual(receipt,before)
+        self.assertEqual(policy.limits(p),receipt['daily_token_limits'])
+        for model in p['models']:
+            with self.subTest(model=model):
+                self.assertEqual(p['models'][model]['reasoning_efforts'],['low','medium','high','xhigh','max'])
+                with self.assertRaises(Denied):normalize({'model':model,'input':'x','reasoning':{'effort':'ultra'}},policy=p)
+
+    def test_pool_labels_reject_all_ascii_controls_including_delete(self):
+        for value in [*range(32),127]:
+            p=profile();p['pools']['Daily']['label']='Daily'+chr(value)
+            with self.subTest(value=value),self.assertRaises(policy.PolicyError):policy.validate(p)
+
     def test_recommendations_are_unconfigured_until_owner_choice(self):
         self.assertEqual(policy.empty()['models'],{});self.assertEqual(policy.empty()['pools'],{})
         self.assertEqual(policy.validate(policy.empty(),allow_empty=True),policy.empty())

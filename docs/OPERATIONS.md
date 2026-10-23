@@ -6,7 +6,7 @@
 |---|---|
 | Start | `codex-api` |
 | Resume last API session | `codex-api resume --last` |
-| Remaining A/B tokens | `codex-api usage` or `!codex-api usage` inside Codex |
+| Remaining tokens per pool | `codex-api usage` or `!codex-api usage` inside Codex |
 | Machine-readable usage | `codex-api usage --json` |
 | Local diagnosis | `codex-api doctor` |
 | Redacted local diagnostic file | `codex-api doctor --bundle` |
@@ -19,7 +19,7 @@
 | Review managed skills | `codex-api extensions list` |
 | Hide additional exact project paths | `codex-api protect add RELATIVE_PATH ...` |
 | Owner: shared allocation overview | `codex-api team allocations` |
-| Member: ask for more tokens | `codex-api team request --group B --tokens 100000` |
+| Member: ask for more tokens | `codex-api team request --group POOL --tokens AMOUNT` |
 
 Use the host terminal for maintenance. The guest helper supports usage, the managed skill list and a member quota request; it cannot approve, transfer, upgrade or administer. `pause` does not erase usage. Exit/relaunch to resume normal admission. A native resume suggestion may say `codex resume`; use `codex-api resume` for this environment.
 
@@ -27,7 +27,11 @@ Use the host terminal for maintenance. The guest helper supports usage, the mana
 
 | Code or check | What to do |
 |---|---|
-| `daily_token_limit` | Full input/output reservation cannot fit. Choose a model in the other group, shorten/new conversation, or wait until UTC rollover. |
+| `daily_token_limit` | The full input plus output reservation cannot fit. Shorten the conversation, choose an approved model in a pool with capacity if available, or wait until 00:00:15 UTC. |
+| `service_tier_disabled` | Use the tier selected by the owner policy. Tier changes require a reviewed policy update. |
+| `reasoning_not_allowed` | Choose an effort supported by the selected model. CLI effort names alone do not prove API support. |
+| `policy_change_pending` | Repeat the original reviewed policy apply command. Keep its private draft and journal intact. |
+| `policy_shared_authority` | Shared clients use the invitation policy. An initialized coordinator permits allocation changes, but whole-policy replacement is not supported. |
 | `provider_disabled` / free eligibility | Free-only is blocked. Do not mark eligibility verified without evidence. Explicitly allow charges only if intended. |
 | `organization_usage_unknown` | Other organization callers are present or unconfirmed. Stop and review the shared-pool assumption. |
 | `workspace_policy_failed` | Move the named sensitive item outside the project; do not paste its content into chat. |

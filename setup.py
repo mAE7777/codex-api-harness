@@ -22,7 +22,7 @@ sys.path.insert(0, str(SOURCE/'app'))
 from guard import Denied, Ledger, atomic_json
 from workspace_policy import check_workspace, managed_requirements
 
-VERSION = '0.3.0'
+VERSION = '0.3.1'
 INSTALL_LAYOUT_VERSION = 2
 UPDATER_ABI = 1
 SBX_VERSION = '0.49.1'

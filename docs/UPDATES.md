@@ -2,7 +2,7 @@
 
 Daily use stays the same: enter the project and run `codex-api`. Updating is a separate, stopped-session action. The updater never downloads or executes a candidate automatically.
 
-Fresh 0.2 installations keep credentials, settings and the complete ledger at permanent paths. Versioned application code lives under `releases/`; one atomic `current` pointer selects a generation. The generated Docker kit follows the current protected paths and approved skills. Updating and rolling back never restore an old ledger, witness, key, account binding, or extension registry.
+Installations created with version 0.2 or later keep credentials, settings, and the complete ledger at permanent paths. Versioned application code lives under `releases/`. One atomic `current` pointer selects a generation. The generated Docker kit follows the current protected paths and approved skills. Updates and rollbacks never restore an old ledger, witness, key, account binding, or extension registry.
 
 ## Update
 
@@ -10,7 +10,7 @@ Fresh 0.2 installations keep credentials, settings and the complete ledger at pe
 2. Run `codex-api upgrade stage /absolute/path/to/source`. This copies a bounded source inventory, validates metadata, compiles Python without executing it, and prints a full source digest and review directory.
 3. Review those exact files and their changes. An optional `--source-pin COMMIT_SHA` is a recorded label; the actual staged tree digest binds the bytes. Neither a digest nor passing tests establishes publisher identity or proves code safe.
 4. Run `codex-api upgrade activate --reviewed-digest FULL_DIGEST`. This explicitly trusts that staged host code. The updater runs its regression checks, then uses that candidate's policy renderer in a separate process with a temporary home and bounded path-only input. Credentials, account settings and ledgers are not passed to the renderer. It checks that permanent state and current policy stayed unchanged before selecting the complete new code generation.
-5. The command rebuilds and verifies only the owned sandbox before the next session. Project files, credentials and accounting remain in place. If native preparation fails, requests stay blocked until it succeeds.
+5. The command prepares and verifies only the owned sandbox, then reports `API sandbox ready`. Project files, credentials, and accounting remain in place. If preparation fails, requests stay blocked. Run `codex-api prepare` to retry; a successful update needs no extra preparation command.
 
 Candidate verification is reviewed **host code**; environment cleanup does not make arbitrary host code safe. Review the complete candidate, including its tests. The harness does not claim that static scanning can certify an update. Check output is stored privately under `upgrades/checks/`; it is not uploaded.
 
@@ -20,7 +20,7 @@ The updater requires the existing layout and updater ABI, and preserves the decl
 
 Use `codex-api upgrade list` to find a retained generation, then run `codex-api upgrade rollback RELEASE_ID`.
 
-Rollback verifies the retained pristine source, runs its checks, and builds a **new** host code generation. It retains the complete current manifest-verified guest kit, including native policy, feature pins, guest wrappers and approved skills. This prevents older templates from weakening current guest protections. It does not restore private state. Native sandbox preparation is required again. Keep retained generations private: their generated policy may contain local project paths and approved private skills.
+Rollback verifies the retained source, runs its checks, and builds a new host code generation. It retains the complete current manifest-verified guest kit, including native policy, feature pins, guest wrappers, and approved skills. Older templates cannot replace those protections. Rollback does not restore private state. The command prepares the sandbox automatically. Keep retained generations private because their generated policy may contain local project paths and approved private skills.
 
 On launch, the manifest still authenticates every policy byte. A separate semantic check requires the exact current workspace and protected-path masks, including descendants; extra denials, newer constraints and formatting changes remain valid. Changing protected paths edits only the two path-mask sections and preserves every other current policy value. Built-in and unrecognized additional denials survive removal of an owner path. An unfamiliar section format is refused before changing settings. The updater supports rollback within its declared ABI and runtime pins. An older generation unable to validate the retained policy refuses to start; ABI compatibility does not bypass policy checks.
 

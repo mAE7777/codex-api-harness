@@ -8,4 +8,4 @@ If a real key leaked, revoke it through its provider. Removing it from Git or ch
 
 Read [the threat model and limitations](docs/BOUNDARIES.md). In particular, the live project mount, per-process Linux deny-glob snapshot, allowed package hosts, in-VM privileges, and organization-wide quota assumptions are material boundaries. This release does not claim guaranteed zero billing, continuous data-loss prevention, or safety against a compromised host.
 
-Only the current tagged release is maintained. Do not weaken a failing integrity, quota, credential or isolation check to restore service. Report a minimal reproduction instead.
+Use the current `main` branch for fixes. Older commits may lack those fixes. Do not weaken a failing integrity, quota, credential, or isolation check to restore service. Report a minimal reproduction instead.

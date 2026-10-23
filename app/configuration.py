@@ -17,14 +17,14 @@ from guard import Denied, Ledger, atomic_json, canonical, pool_info
 from policy import PolicyError, validate, load, limits, digest, read_json, recommended, legacy, render
 
 
-def baselines(items, policy, *, required=True):
+def baselines(items, policy, *, required=True, flag='--baseline'):
     result={}
     for item in items or []:
         group,sep,value=item.partition('=')
-        if not sep or group in result or group not in policy['pools'] or not value.isascii() or not value.isdecimal():raise Denied('Use each --baseline POOL=TOKENS once, for a configured pool.',code='policy_invalid')
+        if not sep or group in result or group not in policy['pools'] or not value.isascii() or not value.isdecimal():raise Denied('Use each '+flag+' POOL=TOKENS once, for a configured pool.',code='policy_invalid')
         result[group]=int(value)
-    if required and set(result)!=set(policy['pools']):raise Denied('Provide today\'s prior input plus output usage for every pool; never assume zero.',code='policy_baseline_required')
-    if any(n>limits(policy)[g] for g,n in result.items()):raise Denied('Prior usage already exceeds the safe limit. Wait for the next UTC day or review the real allowance.',code='policy_baseline_required')
+    if required and set(result)!=set(policy['pools']):raise Denied('Provide '+flag+' POOL=TOKENS for every configured pool.',code='team_allocation_invalid' if flag=='--tokens' else 'policy_baseline_required')
+    if any(n>limits(policy)[g] for g,n in result.items()):raise Denied('The allocation exceeds the organization safety limit.' if flag=='--tokens' else 'Prior usage already exceeds the safe limit. Wait for the next UTC day or review the real allowance.',code='team_allocation_invalid' if flag=='--tokens' else 'policy_baseline_required')
     return result
 
 

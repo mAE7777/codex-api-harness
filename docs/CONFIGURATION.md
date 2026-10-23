@@ -2,7 +2,7 @@
 
 An installation's owner-approved policy lives in `verification.json` under `openai.policy`, outside the project. Credentials and account binding remain separate. A generated, read-only guest copy contains no key or account ID. Every model menu, request check, usage line and shared invitation derives from this contract.
 
-New installs contain an empty policy and cannot send model requests. Defaults are suggestions, not inherited personal choices. Existing pre-0.3 installs retain their original five models, two groups, output cap, Standard tier, daily limits and billing gates through a read-only legacy adapter. An upgrade does not rewrite their verification file or reset usage.
+New installs contain an empty policy and cannot send model requests. Defaults are suggestions. Existing pre-0.3 installs retain their five models, two pools, output cap, Standard tier, daily limits, and billing gates through a read-only compatibility adapter. An upgrade does not rewrite their verification file or reset usage. The adapter advertises only the supported `low`, `medium`, `high`, `xhigh`, and `max` reasoning efforts. An unsupported saved effort uses a compatible default; compatible preferences stay unchanged.
 
 ## First setup
 
@@ -33,7 +33,7 @@ To explicitly choose the previous setup:
 codex-api policy template --preset legacy-five
 ```
 
-This proposes five models, Standard, A/B reference pools of 250,000 / 2,500,000 and a 5% margin. It is not a universal free-use entitlement. The legacy initial `--baseline-a`/`--baseline-b` pair is retained as an explicit opt-in to this preset, never an automatic install default.
+This proposes five models, Standard, reference pools A and B of 250,000 and 2,500,000 tokens, and a 5% margin. These amounts are not universal free allowances. The preset uses conservative context and output caps, with a subset of each model's reasoning efforts. Review current model documentation before choosing it. The legacy initial `--baseline-a` and `--baseline-b` pair explicitly opts into this preset. New installations never select it automatically.
 
 ## Service tiers
 

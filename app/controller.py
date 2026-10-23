@@ -448,12 +448,16 @@ def main():
             if protect(ROOT,args.agent_args):prepare()
         elif args.command=='upgrade':
             from releases import command
-            result=command(ROOT,args.agent_args)
+            result=command(ROOT,args.agent_args,announce_prepare=False)
             # Invoke the active generation in a new process, never keep executing
             # the previously imported code after a pointer switch.
             if isinstance(result,dict) and result.get('native_prepare_required'):
+                print('Code selected. Preparing and checking the dedicated API sandbox.',flush=True)
                 wrapper=ROOT/'bin/codex-api'
                 completed=subprocess.run([str(wrapper),'prepare'],env=clean_env())
+                if completed.returncode:
+                    print('Sandbox preparation failed. Requests remain blocked. Run codex-api prepare to retry.',file=sys.stderr,flush=True)
+                else:print('API sandbox ready. Run codex-api to continue.',flush=True)
                 return completed.returncode
         elif args.command=='policy':
             from configuration import command
@@ -480,7 +484,7 @@ def main():
         print("API Codex: a sandbox operation failed (status "+str(error.returncode)+"). No provider fallback was used.", file=sys.stderr)
         return 1
     except Denied as error:
-        print(str(error), file=sys.stderr)
+        print(('API Codex: ['+error.code+'] ' if error.code else '')+str(error), file=sys.stderr)
         return 1
     except PolicyError as error:
         print('API Codex policy: '+str(error)+' Run codex-api policy show or follow SETUP.md; no request was sent.',file=sys.stderr);return 1

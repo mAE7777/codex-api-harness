@@ -11,6 +11,8 @@ import sys
 import unittest
 from unittest.mock import patch
 import uuid
+import contextlib
+import io
 
 from guard import Denied, atomic_json
 import maintenance
@@ -20,6 +22,12 @@ from workspace_policy import managed_requirements, validate_managed_requirements
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_upgrade_phase_output_leaves_automatic_preparation_to_controller(self):
+        out=io.StringIO()
+        with patch.object(releases,'activate',return_value={'native_prepare_required':True}),contextlib.redirect_stdout(out):
+            result=releases.command(Path('/synthetic'),['activate','--reviewed-digest','0'*64],announce_prepare=False)
+        self.assertTrue(result['native_prepare_required'])
+        self.assertNotIn('Run codex-api prepare',out.getvalue())
     setUp=install_fixtures.InstallTests.setUp
     tearDown=install_fixtures.InstallTests.tearDown
     install=install_fixtures.InstallTests.install

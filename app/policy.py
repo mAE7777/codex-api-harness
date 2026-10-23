@@ -52,7 +52,7 @@ def validate(value, *, allow_empty=False):
     for group,row in pools.items():
         if not isinstance(group,str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,15}',group) or group=='metered':fail('Invalid quota pool identifier.')
         if not isinstance(row,dict) or set(row)!={'label','daily_tokens'}:fail('Each pool needs a label and its actual daily_tokens allowance.')
-        if not isinstance(row['label'],str) or not 1<=len(row['label'])<=96 or not row['label'].isascii() or any(ord(c)<32 for c in row['label']):fail('Pool labels must be short printable English text.')
+        if not isinstance(row['label'],str) or not 1<=len(row['label'])<=96 or any(not 32<=ord(c)<=126 for c in row['label']):fail('Pool labels must be short printable English text.')
         n=integer(row['daily_tokens'],1,MAX_TOKENS,'Daily token allowance')
         if n*(100-margin)//100<1:fail('The margin leaves no usable tokens.')
     if not isinstance(models,dict) or not 1<=len(models)<=32:fail('Choose one to 32 approved Responses/local-tool models.')
@@ -93,7 +93,9 @@ def usage_lines(policy,pools):
 def legacy(receipt=None):
     receipt=receipt or {};p=empty();p['pools']={g:{'label':LEGACY_LABELS[g],'daily_tokens':(receipt.get('daily_token_limits',LEGACY_LIMITS).get(g,LEGACY_LIMITS[g])*100+94)//95} for g in LEGACY_LIMITS}
     for name,group in LEGACY_MODELS.items():
-        efforts=['low','medium','high','xhigh','max']+([] if name in {'gpt-6-luna','gpt-5.6-luna'} else ['ultra'])
+        # Conservative subset of current API capabilities. The native CLI's
+        # effort names do not establish provider support for "ultra".
+        efforts=['low','medium','high','xhigh','max']
         p['models'][name]={'pool':group,'context_window':272000,'max_output_tokens':16384,'reasoning_efforts':efforts,'service_tiers':['default'],'reference':'https://developers.openai.com/api/docs/models/'+name}
     p['defaults']={'model':'gpt-5.6-terra','reasoning_effort':'medium','service_tier':'default','output_token_cap':receipt.get('output_token_cap',16384),'request_deadline_seconds':600}
     return validate(p)

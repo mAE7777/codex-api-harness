@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.3.0 — account-specific configuration
+## 0.3.1
+
+- Correct the compatibility model catalog to omit unsupported `ultra` reasoning. Keep compatible saved preferences, account configuration, and usage.
+- Reject control characters in pool labels and mixed named/legacy shared baselines. Shared allocation errors now refer to `--tokens`.
+- Show upgrade preparation and its final result in order. Preserve preparation failures and print actionable host rejection codes.
+- Update setup, shared examples, troubleshooting, and contributor rules for configurable pools and tiers. Shorten the README and correct the security version policy.
+
+## 0.3.0
 
 - Empty new-install policy; reviewed per-account models, named daily UTC pools and limits. Recommended defaults are editable proposals; the original five-model A/B setup is opt-in.
 - One policy drives gateway validation, native catalog/defaults, reasoning preferences, usage, warnings and shared invitations. Explicit Standard/Fast/Flex/Ultrafast with model compatibility, bounded deadlines, no auto or paid fallback.

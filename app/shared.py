@@ -789,6 +789,7 @@ def command(root, args):
     for item in (add,transfer,defaults,project):item.add_argument('--tokens',action='append',default=[])
     parsed=parser.parse_args(args);team_root=Path(root)/'team'
     if parsed.command=='init':
+        if parsed.baseline and (parsed.baseline_a is not None or parsed.baseline_b is not None):raise Denied('Use named --baseline or legacy --baseline-a/--baseline-b, not both. No coordinator was created.',code='policy_invalid')
         from configuration import baselines
         p=load_policy(root)
         prior=baselines(parsed.baseline,p) if parsed.baseline else parsed.baseline_a
@@ -826,7 +827,7 @@ def command(root, args):
             if tokens:
                 from configuration import baselines
                 if values.get('a') not in (None,0) or values.get('b') not in (None,0):raise Denied('Use named --tokens or legacy A/B flags, not both.')
-                values['a']=baselines(tokens,load_policy(root));values['b']=None
+                values['a']=baselines(tokens,load_policy(root),flag='--tokens');values['b']=None
             if action in ('transfer','defaults','project_limits') and not values.get('operation'):values['operation']=uuid.uuid4().hex
             result=_owner_call(team_root,action,values)
     print(json.dumps(result,indent=2))

@@ -36,5 +36,10 @@ team-tunnel.key*
 protected-paths.json
 ledger-witness.json
 upgrade-pending.json
+policy-draft.json
+policy-pending.json
+policy-render-pending.json
+policy.json
+team-policy.json
 *.key
 *.sock

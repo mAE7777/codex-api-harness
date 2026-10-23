@@ -3,6 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import fcntl
+import contextlib
+import io
 import signal
 import subprocess
 from unittest.mock import patch
@@ -23,6 +25,26 @@ class ControllerTests(unittest.TestCase):
     def tearDown(self):
         for p in self.patches: p.stop()
         self.temp.cleanup()
+
+    def test_upgrade_reports_the_final_prepare_result_and_preserves_failure_status(self):
+        for returncode in (0,7):
+            out,err=io.StringIO(),io.StringIO()
+            with self.subTest(returncode=returncode),patch('sys.argv',['controller','upgrade','activate','--reviewed-digest','0'*64]),patch('releases.command',return_value={'native_prepare_required':True}) as command,patch.object(controller.subprocess,'run',return_value=subprocess.CompletedProcess([],returncode)) as run,contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
+                self.assertEqual(controller.main(),returncode)
+            command.assert_called_once_with(self.root,['activate','--reviewed-digest','0'*64],announce_prepare=False)
+            self.assertEqual(run.call_args.args[0],[str(self.root/'bin/codex-api'),'prepare'])
+            self.assertNotIn('Run codex-api prepare before the next session',out.getvalue())
+            if returncode:
+                self.assertIn('Requests remain blocked',err.getvalue())
+                self.assertNotIn('API sandbox ready',out.getvalue())
+            else:
+                self.assertIn('API sandbox ready',out.getvalue());self.assertEqual(err.getvalue(),'')
+
+    def test_host_rejection_includes_the_error_code(self):
+        out=io.StringIO()
+        with patch('sys.argv',['controller','usage']),patch.object(controller,'status',side_effect=Denied('Prior usage needs review.',code='quota_history_unknown')),contextlib.redirect_stderr(out):
+            self.assertEqual(controller.main(),1)
+        self.assertIn('[quota_history_unknown]',out.getvalue())
 
     def test_reused_name_is_never_stopped_or_removed(self):
         (self.root/'sandbox-created.json').write_text(json.dumps({'name':controller.NAME,'id':'original-id'}))

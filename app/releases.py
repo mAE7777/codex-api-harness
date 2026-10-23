@@ -611,7 +611,7 @@ def inventory(root):
     return {'active_release':current,'activation_pending':(root/'upgrade-pending.json').exists(),'releases':rows}
 
 
-def command(root,args):
+def command(root,args, *, announce_prepare=True):
     parser=argparse.ArgumentParser(prog='codex-api upgrade',description='Stage and review code without rolling back keys, policies, or usage.')
     sub=parser.add_subparsers(dest='action',required=True)
     sub.add_parser('list')
@@ -625,6 +625,6 @@ def command(root,args):
     elif options.action=='activate':result=activate(root,options.reviewed_digest,reviewed_digest=options.reviewed_digest)
     elif options.action=='rollback':result=rollback(root,options.release)
     else:result=recover(root,finish=options.finish)
-    print(json.dumps(result,indent=2))
-    if result.get('native_prepare_required'):print('Run codex-api prepare before the next session. Existing project files, credentials, and the ledger remain in place.')
+    print(json.dumps(result,indent=2),flush=True)
+    if announce_prepare and result.get('native_prepare_required'):print('Run codex-api prepare before the next session. Existing project files, credentials, and the ledger remain in place.',flush=True)
     return result

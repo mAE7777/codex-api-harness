@@ -1,4 +1,4 @@
-# Share an organization safely
+# Share an organization
 
 Shared mode is optional. Personal mode and existing subscription sessions keep
 their own configuration. Shared mode needs one coordinator on the owner's Mac,
@@ -18,7 +18,7 @@ Other keys, Playground, and direct API calls cannot be measured prospectively by
 the harness. Organization administrators can bypass the coordinator using other
 credentials; this software cannot prevent that.
 
-## Choose one policy
+## Choose the policy and allocations
 
 Before initialization, follow [CONFIGURATION.md](CONFIGURATION.md) to select the organization's actual models, daily pools, margins and one service tier. Apply the reviewed private policy on a stopped coordinator installation. Do not ask a joining member to supply an OpenAI key or invent an independent budget. The coordinator policy is pinned after initialization in this release; allocation changes remain supported.
 
@@ -32,40 +32,19 @@ codex-api team member add friend --project FRIEND_PROJECT_ID --tokens Daily=FRIE
 
 Repeat `--baseline POOL=N` and `--tokens POOL=N` for every configured pool. The same named-pool arguments apply to `transfer`, `defaults` and `project-limit`. Models, tier, output cap and organization ceiling are authoritative at the coordinator. Invitations include the policy and digest; the client verifies both before forwarding.
 
-A member first runs `codex-api team join --invite FILE --inspect`, reviews the sanitized policy, and adds `--reviewed-policy-digest SHA256` to the join command. Apply this to local owner clients and credential renewal too. The invitation itself contains a private bearer token: never print or commit it. Older invitations remain compatible with the legacy profile only.
+A member reviews the invitation before joining. The connection steps below include the required digest. Local owner clients and credential renewal require the same review. The invitation contains a private bearer token. Never print or commit it. Older invitations remain compatible only with the legacy profile.
 
-## Initialize once — legacy A/B examples
+## Initialize the coordinator once
 
-The remaining A/B command examples deliberately select the optional legacy-five policy. Replace them with named-pool arguments for your own policy. They are not factory defaults or account entitlement evidence.
+Use a dedicated coordinator installation. Its local API session and gateway must be stopped. After initialization, it cannot also run an independent personal gateway. The owner uses a separate client installation with its own launcher, private home, and port.
 
-Use the account's organization ID and the organization's actual tokens already
-consumed today in each approved model group. A zero baseline is appropriate only
-when nothing has been used today. Do not silently copy a personal ledger or run
-the old independent gateway concurrently against this organization.
+The commands above require the reviewed policy from CONFIGURATION.md. Replace each placeholder with the actual organization, project, prior usage, and allocation. Include all earlier personal usage in the organization baseline. Zero is appropriate only when no tokens were used today.
 
-```sh
-codex-api team init --organization ORG_ID \
-  --baseline-a TOKENS_ALREADY_USED --baseline-b TOKENS_ALREADY_USED \
-  --all-traffic-coordinated
-```
+Initialization creates private `team/` state. Repeating it cannot reset the ledger. Divide each pool's usable capacity between members. The sum of member defaults cannot exceed the organization's ceiling after the safety margin. Prior organization usage still reduces the capacity available today.
 
-This creates private `team/` state beneath the harness installation. Repeating
-initialization cannot reset it. For the legacy-five policy, usable organization limits are A 237,500 and B 2,375,000 tokens per UTC day after the reference 5% margin. Other policies use their own effective ceilings. These numbers do not prove complimentary eligibility.
+For the optional `legacy-five` policy, usable reference ceilings are A 237,500 and B 2,375,000 tokens. An equal split is A 118,750 and B 1,187,500 per member. These numbers are examples, not proof of a free allowance. Legacy `--baseline-a`, `--baseline-b`, `--a`, and `--b` flags remain supported for that policy. Do not mix them with named-pool flags.
 
-Initialization requires the local API session and its gateway to be stopped.
-An installation containing a coordinator cannot continue using an independent
-personal model gateway. Prefer a dedicated coordinator installation. The owner
-can use a separate client launcher paired with `team join --local`; an existing
-configured personal account is preserved rather than silently converted.
-
-For an initial equal split:
-
-```sh
-codex-api team member add owner --project OWNER_PROJECT_ID --a 118750 --b 1187500
-codex-api team member add friend --project FRIEND_PROJECT_ID --a 118750 --b 1187500
-```
-
-The command gives two private file locations. Fill the member's project-specific
+Each `member add` command gives two private file locations. Fill the member's project-specific
 restricted OpenAI key into its **key file on the coordinator Mac**. Never put an
 OpenAI key into an invite. Send only the invite through an encrypted channel;
 it contains a powerful bearer credential and must remain private. Token hashes
@@ -126,12 +105,16 @@ use matching `--ssh-port`, `--coordinator-port` in `team share`, and `--port` in
 Each operation uses its own authenticated tunnel and temporary loopback port;
 an unrelated listener occupying a saved port is never reused or sent a token.
 
-On the member's prepared client, run `codex-api team join --invite PRIVATE_INVITE_FILE`.
-The owner uses a separate client installation with `--local` on the same Mac.
-The complete guided pairing flow is in [SETUP.md](../SETUP.md#shared-mode-branch). After pairing,
-ordinary `codex-api` usage stays the same. `codex-api usage` shows exactly two
-English lines for the current member. The displayed remainder is the smallest
-available capacity across the member, project, and organization.
+On the member's installed client, review and join:
+
+```sh
+codex-api team join --invite PRIVATE_INVITE_FILE --inspect
+codex-api team join --invite PRIVATE_INVITE_FILE --reviewed-policy-digest SHA256
+```
+
+Use the digest from the inspection. Add `--local` to the owner's separate client command on the same Mac. Then prepare the client sandbox as described in [SETUP.md](../SETUP.md#shared-mode-branch).
+
+Daily startup remains `codex-api`. Usage shows one English line per approved pool, or two lines for the legacy A/B policy. The remaining amount is the smallest available capacity across the member, project, and organization.
 
 If the coordinator or tunnel is unavailable, requests stop. There is no personal
 key fallback, independent local quota, account rotation, or automatic retry.
@@ -143,12 +126,11 @@ coordinator or another member's session.
 
 ```sh
 codex-api team allocations
-codex-api team transfer --from owner --to friend --a 10000 --b 100000
+codex-api team transfer --from owner --to friend --tokens Daily=TRANSFER_AMOUNT
 ```
 
 Transfers take effect immediately and expire at the next UTC reset. They can
-move only tokens that the donor has neither used nor reserved. Both model
-groups change in one transaction or neither changes. Revocation does not refund
+move only tokens that the donor has neither used nor reserved. All configured pools change in one transaction or none changes. Repeat `--tokens POOL=N` for every pool, including zero transfers. Revocation does not refund
 usage; the owner can explicitly transfer a revoked member's genuinely unused
 capacity. `--revision N` rejects changes based on an outdated administrative
 view. Supplying a stable `--operation ID` makes a retried administrative action
@@ -157,8 +139,8 @@ idempotent; reuse with different changes is rejected.
 To change subsequent daily defaults without rewriting today:
 
 ```sh
-codex-api team defaults owner --a NEW_A --b NEW_B
-codex-api team defaults friend --a NEW_A --b NEW_B
+codex-api team defaults owner --tokens Daily=NEW_OWNER_ALLOCATION
+codex-api team defaults friend --tokens Daily=NEW_FRIEND_ALLOCATION
 ```
 
 When increasing one default and decreasing another, decrease first. Defaults
@@ -169,15 +151,14 @@ never create additional capacity.
 Optional project limits apply across every member using that project:
 
 ```sh
-codex-api team project-limit PROJECT_ID --a MAX_A --b MAX_B
+codex-api team project-limit PROJECT_ID --tokens Daily=PROJECT_CAP
 ```
 
 They persist across UTC days, cannot exceed the organization safety limits,
 and cannot be lowered below already used or reserved tokens today. Member
 allocations can exceed a tighter project limit; the project limit still wins.
 
-Member quota requests are deduplicated per UTC day and model group. They do
-not automatically grant capacity. On the owner Mac:
+A member can request more tokens with `codex-api team request --group Daily --tokens AMOUNT`. Use the actual pool identifier. Requests are deduplicated per UTC day and pool. They do not grant capacity automatically. On the owner Mac:
 
 ```sh
 codex-api team requests
@@ -245,8 +226,7 @@ Backups are sensitive and cannot be used to create a second active coordinator.
   provider attempt; changing its request body conflicts. Responses are not
   cached for replay. An intentional retry uses a new operation after reviewing
   the previous result; it can consume more tokens.
-- Warnings are claimed once per member, UTC day, and model group at 90% of
-  that member's allocation. A crash immediately after claiming a warning can
+- Warnings use the policy threshold, recommended at 90% of the member's allocation. Each warning is claimed at most once per member, UTC day, and pool. A crash immediately after claiming a warning can
   lose its display; quota enforcement does not depend on the warning.
 - Provider aggregate Usage/Costs data is useful for reconciliation. It cannot
   prove a future request is affordable or that a missing request consumed zero.
