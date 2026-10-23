@@ -60,6 +60,10 @@ def request_more(args):
 
 
 def main(args):
+    if args[:1]==['tools']:
+        try:return runpy.run_path('/etc/codex-api/tool-client.py')['main'](args[1:] or ['status'])
+        except (ValueError,OSError) as error:
+            print('['+getattr(error,'code','tool_local_error')+'] '+(str(error) if hasattr(error,'code') else 'Tool unavailable; inspect tools status.'),file=sys.stderr);return 1
     if args in (['session','native'],['session','native','--json']) or args[:1]==['output']:
         try:
             helper=runpy.run_path('/etc/codex-api/local-tools.py')

@@ -168,6 +168,8 @@ Explain [request controls](docs/REQUEST_CONTROLS.md) briefly when the owner asks
 
 Optional output filtering executes only inside the sandbox. File checkpoints copy only explicitly chosen text files and need a stopped, reviewed restore; they are not a new default backup or sensitive-file protection mechanism. Do not create them during setup or copy the project automatically. No additional scanner API keys, telemetry or cloud services are required.
 
+When the owner requests web/search, follow [TOOLS.md](docs/TOOLS.md). File search is available locally. Review exact web hosts before enabling fetch. Search keys are optional: create the private file only when needed, verify actual free allowance/payment settings, and apply the exact reviewed tool draft. Unknown free evidence, a changed key, a new allowance month or an unfinished call stops search. Never migrate old search verification flags into a new approval automatically. Media stays disabled; [MEDIA.md](docs/MEDIA.md) records local candidates.
+
 For a skill or skill-only plugin, use [EXTENSIONS.md](docs/EXTENSIONS.md). Inspect the requested local folder only, read every staged file, explain code/network references briefly, and approve the exact digest only after review. Do not import all personal skills, execute remote installers, grant new destinations, or turn on native plugins. Review is not a proof against malicious instructions.
 
 Use [UPDATES.md](docs/UPDATES.md) for a version change. Stage without executing candidate code; review its digest before running its candidate checks. Never overwrite an installed app or restore an old ledger to upgrade. An interrupted activation blocks new sessions until explicit recovery.

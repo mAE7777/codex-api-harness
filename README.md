@@ -45,9 +45,10 @@ Use `codex-api report` for request phases, input/cache/output details and an exp
 - Provider keys stay on the host. The API environment has its own `CODEX_HOME` and authenticated gateway. It inherits no subscription login or host credentials.
 - The gateway counts input and reserves input plus maximum output before generation. It settles confirmed usage afterward. Uncertain usage retains its reservation across restarts and UTC rollover.
 - Local shell, patches, and pinned Playwright CLI are available. Runtime dependency downloads permit HTTPS GET and HEAD only to approved npm and PyPI hosts.
-- OpenAI hosted search, execution, remote MCP, storage, and unknown tool types are blocked. Image and video generation, transcription, and speech output are disabled.
+- Bundled [free tools](docs/TOOLS.md) provide bounded file search, approved-host HTTPS reading and optional verified Tavily/Exa/Brave search. A fixed in-sandbox MCP exposes the reviewed tools. Unknown free evidence stops requests; no paid fallback.
+- OpenAI hosted search, execution, remote MCP, storage, and unknown tool types are blocked. Image/video generation and voice remain disabled; [media research](docs/MEDIA.md) separates local candidates from billed services.
 
-Optional [shared mode](docs/SHARED.md) adds one coordinator on the owner's Mac with organization, project, and member allocations. [Reviewed skills](docs/EXTENSIONS.md) use immutable snapshots and exact approval digests. Native plugins, MCP, and plugin hooks remain disabled.
+Optional [shared mode](docs/SHARED.md) adds one coordinator on the owner's Mac with organization, project, and member allocations. [Reviewed skills](docs/EXTENSIONS.md) use immutable snapshots and exact approval digests. Arbitrary MCP servers, native plugins and plugin hooks remain disabled.
 
 ## Costs and limits
 
@@ -62,6 +63,7 @@ Shared mode requires every organization caller to use the coordinator. It cannot
 ## Diagnose, update, or remove
 
 ```sh
+codex-api tools status           # tool readiness; no provider call
 codex-api doctor                 # local checks; no provider call
 codex-api policy show            # models, limits, and selected tier
 codex-api explain CODE           # reason and next step for a rejection

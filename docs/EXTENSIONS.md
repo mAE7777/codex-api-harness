@@ -2,7 +2,7 @@
 
 Managed skills are optional. They do not change ordinary startup or the policy-derived usage display. No host skill, plugin login, connector, browser session, or environment secret is imported.
 
-The harness supports standalone skill folders and **skill-only** `.codex-plugin/plugin.json` bundles. Native plugin installation, apps, MCP servers, lifecycle hooks, and automatic dependency installation remain disabled. A plugin declaring any of those capabilities is rejected; the harness does not silently remove them and claim the complete plugin works.
+The harness supports standalone skill folders and **skill-only** `.codex-plugin/plugin.json` bundles. Native plugin installation, apps, extension-declared MCP servers, lifecycle hooks, and automatic dependency installation remain disabled. The fixed [harness MCP](TOOLS.md) is shipped separately in the reviewed image. A plugin declaring any of those capabilities is rejected; the harness does not silently remove them and claim the complete plugin works.
 
 ## Add a skill
 
@@ -50,7 +50,7 @@ The native `/skills` picker does **not** list this managed catalog. Native files
 - JSON/YAML-declared MCP, hooks, credentials, and dependencies are rejected. Script accesses to common secret environment variables are rejected. Network references are reported and never grant access.
 - Source contents are copied to a private snapshot with a content digest. Approval binds skill names, paths, and code/implicit-use choices to that digest. Scripts are copied without executable bits; reviewed code can still be run through its interpreter inside the existing sandbox.
 - Host checks compare the approval, snapshot, catalog, build payload, and exact file set. Guest startup checks the image manifest before adding the catalog. Unexpected files, changes, or links fail closed. Preference changes cannot replace the managed catalog.
-- The native child receives managed policy as highest-priority CLI settings. Project configuration cannot replace the catalog, provider, feature pins, or login-store setting. Managed requirements independently deny MCP and native plugins. Native bundled/discovered skill instruction injection and legacy notification commands are disabled.
+- The native child receives managed policy as highest-priority CLI settings. Project configuration cannot replace the catalog, provider, feature pins, or login-store setting. Managed requirements admit only the exact bundled harness MCP invocation and deny other MCP servers and native plugins. Native bundled/discovered skill instruction injection and legacy notification commands are disabled.
 - Reviews and changes require a stopped session and exclusive maintenance lease. Approval/removal invalidates image readiness before activation. The next preparation detects changed managed kit bytes and rebuilds only a VM whose recorded identity and project mount still match.
 
 Automatic history preservation is limited to 4,096 files, 64 MiB per file, and 128 MiB total. Unknown or unfinished session formats, unsafe links, invalid checksums, or exceeded limits stop replacement before deleting the old VM. Compressed history stays as opaque, hash-checked bytes; it is never decompressed or executed on the host. Private backups contain conversation history and remain owner-only under the installation's `guest-state/` directory. Login state, native databases, arbitrary config, plugins, and skills are excluded. The most recent verified backup is retained; it is not a general disaster-recovery or secure-deletion service.

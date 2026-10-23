@@ -24,13 +24,15 @@ This release supports macOS Apple Silicon, Python 3.11.8+, Docker Sandboxes 0.49
 | Quota request and owner approval | Optional | No automatic budget increase; repeated approval is idempotent |
 | Restricted encrypted member tunnel | Optional | Dedicated host-side service; no shell/subsystem/other forwarding |
 | Reviewed standalone skills and skill-only plugin bundles | Optional | Exact digest; explicit invocation by default; scripts need review |
-| Native plugin marketplace, MCP, apps and plugin hooks | Blocked | Bundle capabilities require dedicated adapters |
+| Bundled harness MCP | Supported | Fixed reviewed executable, arguments and five tool names; no arbitrary server configuration |
+| Public text fetch and explicit file search | Supported | Approved HTTPS hosts, checked/pinned public IPs, bounded text and current file masks |
+| Native plugin marketplace, other MCP, apps and plugin hooks | Blocked | Bundle capabilities require dedicated adapters |
 | Native multi-agent delegation | Blocked | Feature stays pinned off; shared mode supports separate human members |
 | Existing subscription/home credentials, browser, host skills | Blocked | Never inherited or imported |
 | OpenAI hosted search/execution/storage/MCP | Blocked | Both client configuration and request schema reject them |
 | Image/video generation, speech/transcription | Blocked | No endpoint, credential or fallback supplied |
-| Brave search | Unsupported | No active adapter |
-| Exa/Tavily | Disabled by default | Personal-only adapters require fresh account/payment evidence |
+| Brave Search | Disabled by default | Personal-only, verified prepaid free credit, no paid balance/reload; conservative full debit |
+| Exa/Tavily | Disabled by default | Personal-only reviewed expiring free evidence, key binding and durable separate tool budgets |
 | Universal free API entitlement | Unconfirmed | Free-only blocks count/inference until proven |
 | Native CLI transparent retry deduplication | Unconfirmed | Explicit operation IDs supported; no prompt-hash deduplication |
 | Real-time authoritative OpenAI Usage/Costs reconciliation | Unsupported | Aggregated account data cannot authorize the next request |

@@ -1,27 +1,11 @@
 #!/usr/bin/env python3
-"""Guest-side helper: no provider credentials or arbitrary destinations."""
-import argparse
-import json
-import os
-import urllib.request
-import urllib.error
+"""Compatibility alias for the reviewed sandbox tool client."""
+import runpy
+import sys
 
-parser = argparse.ArgumentParser()
-parser.add_argument("operation", choices=["search", "extract"])
-parser.add_argument("value")
-parser.add_argument("--provider", choices=["tavily", "exa"], default="tavily")
-args = parser.parse_args()
-token = os.environ.get("CODEX_GATEWAY_TOKEN", "")
-if not token: raise SystemExit("Gateway credential unavailable; request stopped")
-payload = {"provider": args.provider, "query" if args.operation == "search" else "url": args.value}
-request = urllib.request.Request(
-    "http://host.docker.internal:49187/tools/" + args.operation,
-    data=json.dumps(payload).encode(),
-    headers={"Content-Type": "application/json", "Authorization": "Bearer " + token},
-    method="POST")
-try:
-    with urllib.request.urlopen(request, timeout=45) as response:
-        print(response.read(512_001).decode())
-except urllib.error.HTTPError as error:
-    print(error.read(4096).decode())
-    raise SystemExit(1)
+if __name__ == '__main__':
+    value=runpy.run_path('/etc/codex-api/tool-client.py')
+    try:raise SystemExit(value['main'](sys.argv[1:]))
+    except (ValueError,OSError) as error:
+        print('['+getattr(error,'code','tool_local_error')+'] '+(str(error) if hasattr(error,'code') else 'Tool unavailable; inspect tools status.'),file=sys.stderr)
+        raise SystemExit(1)

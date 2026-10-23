@@ -1,10 +1,10 @@
 # Release verification
 
-Release 0.4.0, checked 2026-10-23. Supported integration target: macOS Apple Silicon, Python 3.11.8+, Docker Sandboxes 0.49.1, Codex CLI 0.162.1, and Playwright CLI 0.1.22. Portable Linux tests do not establish native Linux installation support.
+Release 0.5.0, checked 2026-10-23. Supported integration target: macOS Apple Silicon, Python 3.11.8+, Docker Sandboxes 0.49.1, Codex CLI 0.162.1, and Playwright CLI 0.1.22. Portable Linux tests do not establish native Linux installation support.
 
 | Check | Scope |
 | --- | --- |
-| Portable regression | 431 tests passed for this release; `python3 scripts/check.py` uses fake providers and loopback only |
+| Portable regression | 459 tests passed for this release; `python3 scripts/check.py` uses fake providers and loopback only |
 | Request observations | Content-free input/cache/output/reasoning records; explicit missing counters; read-only pool decomposition; member-scoped reports |
 | Optional controls | Full-request run reservations, same-error acknowledgement, storage floor, expiring integer USD prices, atomic concurrent reservations, prior-use baselines, unknown cross-period holds and cost discrepancy stops |
 | Control changes | Unfinished requests prevent changed controls; deleted approvals cannot bypass enforcement or permit rollback to an unaware guard |
@@ -26,6 +26,8 @@ Release 0.4.0, checked 2026-10-23. Supported integration target: macOS Apple Sil
 | Recovery and rollback | Reconciliation uses the selected pools/deadline; old code cannot ignore a generalized policy or shared state; no old ledger restoration |
 | Legacy compatibility | Read-only interpretation of pre-0.3 model/group/tier settings; two English usage lines retained; legacy launchers recognize the new policy command without replacement |
 | Publication | Exact staged surface and Git history scanned; empty source policy required; installed policy/keys/runtime artifacts excluded |
+
+Version 0.5 passed native Code Mode calls through the bundled MCP, including malicious project command/environment overrides and an unapproved server. The static environment-clearing launcher and exact managed identity kept the approved tool working and prevented the unreviewed process from executing. Current file masks, free-provider expiry, changed keys, conservative tool holds, host/IP/redirect rejection and interrupted approval replay are covered by synthetic tests. The owner upgrade preserved configuration, credential hashes, ledger tables and all original session files. A no-prompt resume and idle Ctrl+C check preserved accounting and the two English usage lines. No real model, count or search request was sent.
 
 The four-tier native checks were run for 0.3.0 using a separate temporary installation, workspace, port, and owned sandbox. Version 0.4.0 also completed an independent native rebuild and the helper checks above, then removed its owned temporary sandbox. Keys and accounts were synthetic. Preparation repeats isolation and offline protocol acceptance, including output-storage writability and read-only API session inventory. No real model, exact-count, or search request is required. A fake-provider pass establishes the local CLI and gateway protocol. It does not prove actual model access, project tier permission, pricing, or complimentary eligibility.
 

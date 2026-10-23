@@ -163,10 +163,15 @@ def native_deny_globs(protected=()):
 
 
 def managed_requirements(workspace=WORKSPACE, protected=()):
+    base=Path(__file__).resolve().parent.parent/'kit/config.toml'
+    mcp=tomllib.loads(base.read_text())['mcp_servers']['harness']
+    invocation='command = { executable = '+json.dumps(mcp['command'])+', args = ['+','.join('{match="exact",value='+json.dumps(arg)+'}' for arg in mcp['args'])+'] }'
     lines=['default_permissions = "codex_api_workspace"','allow_managed_hooks_only = true',
-           'mcp_servers = {}','allowed_web_search_modes = ["disabled"]',
+           'allowed_web_search_modes = ["disabled"]',
            'allowed_approval_policies = ["never"]','allowed_login_methods = ["api"]',
            'model_catalog_json = "/etc/codex-api/models.json"','allow_login_shell = false',
+           '[mcp_servers.harness.identity]',
+           invocation,
            '[allowed_permission_profiles]','codex_api_workspace = true',
            '[permissions.codex_api_workspace]','extends = ":workspace"',
            'description = "API workspace with sensitive files denied"',

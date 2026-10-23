@@ -18,7 +18,8 @@ RUN npm uninstall -g --no-fund --no-audit @openai/codex \
     && npm install -g --no-fund --no-audit @playwright/cli@0.1.22
 USER root
 COPY --from=codex /out/ /
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates busybox-static \
+    && ldd /bin/busybox 2>&1 | grep -q 'not a dynamic executable' \
     && rm -rf /var/lib/apt/lists/* \
     && test "$(command -v codex)" = /usr/local/bin/codex \
     && scratch=$(mktemp -d) \
@@ -37,6 +38,7 @@ COPY extensions /etc/codex-api/extensions/
 COPY requirements.toml /etc/codex/requirements.toml
 COPY quota-notice.py npmrc /etc/codex-api/
 COPY local-tools.py /etc/codex-api/local-tools.py
+COPY tool-client.py /etc/codex-api/tool-client.py
 COPY workspace /etc/codex-api/workspace
 COPY quota-client.py /usr/local/bin/codex-api
 COPY entrypoint.sh /usr/local/bin/codex-api-entrypoint

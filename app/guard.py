@@ -21,6 +21,8 @@ UTC_OVERLAP_SECONDS = REQUEST_DEADLINE_SECONDS + UTC_NEW_DAY_GUARD_SECONDS
 LOCAL_FUNCTIONS = {"exec_command", "write_stdin", "shell", "shell_command",
                    "update_plan", "request_user_input", "request_user_input_async", "view_image", "wait", "sleep"}
 LOCAL_CUSTOM = {"apply_patch", "exec"}
+HARNESS_TOOLS = {'status','fetch','search','extract','files_search'}
+HARNESS_FUNCTIONS = {'mcp__harness__'+name for name in HARNESS_TOOLS}
 ROOT_FIELDS = {"model", "input", "instructions", "tools", "tool_choice",
                "parallel_tool_calls", "reasoning", "text", "include", "store",
                "stream", "service_tier", "max_output_tokens", "temperature",
@@ -143,16 +145,16 @@ def read_quota(root, limits, *, now=None, policy=None):
             raise Denied('Usage state cannot be verified; run codex-api doctor.', code='quota_state_unavailable') from error
 
 
-def _tool(tool):
+def _tool(tool, namespace=None):
     if not isinstance(tool, dict): raise Denied("Invalid tool definition")
     kind, name = tool.get("type"), tool.get("name")
-    if kind == "function" and name in LOCAL_FUNCTIONS:
+    if kind == "function" and (name in LOCAL_FUNCTIONS | HARNESS_FUNCTIONS or namespace=='mcp__harness' and name in HARNESS_TOOLS):
         if set(tool) - {"type", "name", "description", "parameters", "strict", "defer_loading"}:
             raise Denied("Unknown local function option")
     elif kind == "custom" and name in LOCAL_CUSTOM:
         if set(tool) - {"type", "name", "description", "format", "defer_loading"}:
             raise Denied("Unknown local custom-tool option")
-    elif kind == "namespace" and name in {"functions","clock"}:
+    elif kind == "namespace" and name in {"functions","clock","mcp__harness"}:
         if set(tool) - {"type", "name", "description", "tools"}: raise Denied("Unknown namespace option")
         children = tool.get("tools")
         if not isinstance(children, list) or not children: raise Denied("Empty namespace")
@@ -160,7 +162,8 @@ def _tool(tool):
             if not isinstance(child,dict) or child.get("type") == "namespace": raise Denied("Invalid nested namespace")
             if name=='clock' and (child.get('type')!='function' or child.get('name')!='sleep'):
                 raise Denied('Only the local clock sleep tool is allowed')
-            _tool(child)
+            if name=='mcp__harness' and (child.get('type')!='function' or child.get('name') not in HARNESS_TOOLS):raise Denied('Only bundled harness MCP tools are allowed')
+            _tool(child,namespace=name)
     else:
         raise Denied("Hosted or unreviewed tool denied")
 
@@ -234,10 +237,11 @@ def normalize(payload, output_cap=4096, *, policy=None):
                             continue
                     raise Denied("External file, URL, audio or unknown input denied")
             elif kind in {"function_call", "custom_tool_call"}:
-                if item.get('namespace') not in {None,'functions','clock'}: raise Denied('Unknown tool-history namespace')
+                if item.get('namespace') not in {None,'functions','clock','mcp__harness'}: raise Denied('Unknown tool-history namespace')
                 if item.get('namespace')=='clock' and (kind!='function_call' or item.get('name')!='sleep'):
                     raise Denied('Unknown clock tool history')
-                if item.get("name") not in LOCAL_FUNCTIONS | LOCAL_CUSTOM:
+                if item.get('namespace')=='mcp__harness' and (kind!='function_call' or item.get('name') not in HARNESS_TOOLS):raise Denied('Unknown harness tool history')
+                if item.get("name") not in LOCAL_FUNCTIONS | LOCAL_CUSTOM | HARNESS_FUNCTIONS and not (item.get('namespace')=='mcp__harness' and item.get('name') in HARNESS_TOOLS):
                     raise Denied("Unreviewed tool history denied")
             elif kind not in {"function_call_output", "custom_tool_call_output", "reasoning"}:
                 raise Denied("Stateful, hosted or unknown input item denied")

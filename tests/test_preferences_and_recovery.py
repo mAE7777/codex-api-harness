@@ -77,7 +77,7 @@ class PreferenceTests(unittest.TestCase):
         stub.write_text('#!/bin/sh\nexit 0\n');stub.chmod(0o700)
         real_prepare=preferences.prepare
         def prepare(home,**kwargs):return real_prepare(home,self.base,Path(self.temp.name)/'absent-extensions',**kwargs)
-        with patch.object(preferences,'api_home',return_value=self.home),patch.object(preferences,'prepare',side_effect=prepare),patch.dict(os.environ,{'PATH':str(binary)+os.pathsep+os.environ.get('PATH','')}):
+        with patch.object(preferences,'api_home',return_value=self.home),patch.object(preferences,'mcp_credential'),patch.object(preferences,'prepare',side_effect=prepare),patch.dict(os.environ,{'PATH':str(binary)+os.pathsep+os.environ.get('PATH','')}):
             self.assertEqual(preferences.run(['-m','gpt-6.1-sol','-c','model_reasoning_effort=low']),0)
         self.assertEqual(json.loads((self.home/'preferences.json').read_text()),before)
         self.assertEqual(preferences.read_config(self.home/'config.toml')['model'],'gpt-5.6-terra')

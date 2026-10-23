@@ -1,5 +1,16 @@
 """Credential-free explanations for local policy and API failures."""
 EXPLANATIONS = {
+ 'tool_disabled': ('This search provider has no approved free account evidence.', 'Use codex-api tools status. Review the actual free plan, prior use and disabled payments before applying a private tool draft. A key alone is insufficient.'),
+ 'tool_evidence_expired': ('Free tool evidence expired or its allowance month changed.', 'Keep search stopped until the current free allowance and prior usage are verified. No automatic credit reset or paid fallback occurs.'),
+ 'tool_policy_invalid': ('The tool policy is incomplete or unsupported.', 'Use tools template/check/apply in the host terminal. Unknown provider options and unverified payment settings remain blocked.'),
+ 'tool_policy_changed': ('Reviewed tool policy changed or its application was interrupted.', 'Reapply the exact reviewed draft while stopped. Do not delete the ledger or reset a tool budget.'),
+ 'tool_host_not_approved': ('The public fetch host is outside the approved list.', 'Review the exact hostname in a private tools draft; redirects need approval too. No wildcard or private-network access is granted.'),
+ 'tool_private_address': ('DNS includes a private, mapped or reserved address.', 'Use an ordinary public HTTPS source. Localhost and host services require a dedicated reviewed adapter.'),
+ 'tool_free_limit': ('The whole search operation cannot fit its verified free budget.', 'Wait for a confirmed new allowance period or deliberately review the account. No recharge or paid fallback occurs.'),
+ 'tool_unconfirmed_request': ('An earlier tool request has uncertain completion or usage.', 'Inspect tools status. Leave it blocked while completion is unknown. After verified completion, tools resolve retains the entire debit without a refund.'),
+ 'tool_usage_unconfirmed': ('Provider usage is missing, invalid or above the conservative hold.', 'No automatic retry is made. Inspect tools status and provider completion; any dispatched request retains its full reservation.'),
+ 'tool_key_changed': ('The search credential differs from the privately approved key binding.', 'Review the account and allowance again. An existing same-month budget cannot be rebound or reset.'),
+ 'tool_shared_disabled': ('Shared mode does not coordinate search or public fetch in this release.', 'Local file search remains available. Do not create an independent provider ledger around a shared client.'),
  'team_ssh_stop_unconfirmed': ('The dedicated forwarding child did not confirm shutdown within the bounded wait.', 'Shared request admission is stopped and the ledger is closed. Retry stopping the coordinator; never kill a system SSH service or delete accounting state.'),
  'controls_invalid': ('Optional request controls do not match their supported schema or current model policy.', 'Inspect controls show and the private draft. Apply only its exact reviewed digest; do not edit the active file.'),
  'controls_changed': ('Reviewed controls changed, disappeared, or were interrupted during application.', 'Restore the reviewed file or repeat the original controls apply command while stopped. Usage was not reset.'),

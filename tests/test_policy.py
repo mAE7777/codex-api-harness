@@ -248,7 +248,8 @@ class PolicyInstallTests(unittest.TestCase):
         import releases
         self.initialize()
         with self.assertRaises(Denied):releases._state_compatible(self.root,{'harness_version':'0.2.0'})
-        releases._state_compatible(self.root,{'harness_version':'0.3.0'})
+        with self.assertRaises(Denied):releases._state_compatible(self.root,{'harness_version':'0.3.0'})
+        releases._state_compatible(self.root,{'harness_version':'0.5.0'})
 
     def test_reconciliation_reads_dynamic_pool_and_retains_request(self):
         import recovery

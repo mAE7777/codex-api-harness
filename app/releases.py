@@ -282,7 +282,7 @@ def _verify_manifest(root,manifest,payload=None):
 
 def _policy_digest(root):
     root=Path(root);parts={}
-    for name in ('settings.json','protected-paths.json','extensions/registry.json','controls.json'):
+    for name in ('settings.json','protected-paths.json','extensions/registry.json','controls.json','tools.json'):
         path=root/name
         if path.exists():
             if path.is_symlink():fail('Managed policy must not be linked.')
@@ -295,7 +295,7 @@ def _policy_digest(root):
 def _permanent_fingerprint(root):
     """Detect test-written private state without backing up or restoring it."""
     root=Path(root);files={}
-    for name in ('openai-key.env','openai-key.next.env','search-keys.env','gateway.token','verification.json','team-client.json','controls.json','active-run.json','checkpoint-pending.json'):
+    for name in ('openai-key.env','openai-key.next.env','search-keys.env','gateway.token','verification.json','team-client.json','controls.json','active-run.json','checkpoint-pending.json','tools.json'):
         path=root/name
         if path.exists():
             if path.is_symlink() or not path.is_file():fail('A private state file is unsafe.')
@@ -367,6 +367,13 @@ def _state_compatible(root,report):
     # Older guards cannot interpret a generalized policy or normalized shared
     # allocation tables. Retaining the guest kit alone cannot make them safe.
     root=Path(root)
+    if _version(report['harness_version'])<(0,5,0):
+        if (root/'kit/tool-client.py').exists():fail('Historical code cannot serve the retained bundled MCP kit. Keep version 0.5.0 or newer; no guest protections or usage were replaced.')
+        if (root/'tools.json').exists():fail('Historical code cannot enforce the reviewed tool policy. Keep version 0.5.0 or newer.')
+        if (root/'state/usage.sqlite3').is_file():
+            from guard import readonly_database
+            with readonly_database(root/'state') as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='tool_config'").fetchone() and db.execute('SELECT 1 FROM tool_config').fetchone():fail('Historical code would bypass reviewed tool controls. Tool budgets and usage were preserved.')
     if _version(report['harness_version'])<(0,4,0):
         from guard import readonly_database
         for authority in (root,root/'team'):

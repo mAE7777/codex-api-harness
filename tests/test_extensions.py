@@ -194,7 +194,9 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(overrides['features.skip_host_skill_discovery'],'true');self.assertEqual(overrides['features.plugins'],'false')
         self.assertEqual(overrides['model_provider'],'"quota_gateway"');self.assertEqual(overrides['cli_auth_credentials_store'],'"ephemeral"')
         self.assertEqual(overrides['skills.bundled.enabled'],'false');self.assertEqual(overrides['skills.include_instructions'],'false')
-        self.assertEqual(overrides['mcp_servers'],'{}');self.assertEqual(overrides['notify'],'[]')
+        self.assertIn('"/bin/busybox"',overrides['mcp_servers']);self.assertEqual(overrides['notify'],'[]')
+        self.assertIn('"/etc/codex-api/tool-client.py"',overrides['mcp_servers'])
+        self.assertNotIn('mcp_servers.harness.command',overrides)
         self.assertIn('$release-review',json.loads(overrides['developer_instructions']))
         for attempt in ('features.skip_host_skill_discovery=false','features.plugins=true','developer_instructions="untrusted"','mcp_servers.x.command="untrusted"','model_provider="untrusted"','notify=["untrusted"]'):
             with self.subTest(attempt=attempt),self.assertRaises(preferences.PolicyArgumentError):preferences.validate_cli_args(['-c',attempt])

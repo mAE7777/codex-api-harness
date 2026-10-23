@@ -22,7 +22,7 @@ sys.path.insert(0, str(SOURCE/'app'))
 from guard import Denied, Ledger, atomic_json
 from workspace_policy import check_workspace, managed_requirements
 
-VERSION = '0.4.0'
+VERSION = '0.5.0'
 INSTALL_LAYOUT_VERSION = 2
 UPDATER_ABI = 1
 SBX_VERSION = '0.49.1'
@@ -34,9 +34,9 @@ DEFAULT_HOME = Path.home()/'Library/Application Support/CodexAPIHarness'
 APP_FILES = ('settings.py','guard.py','gateway.py','controller.py','diagnostics.py',
              'recovery.py','transport_control.py','workspace_policy.py','onboarding.py','provision.py',
              'team_client.py','shared.py','extensions.py','maintenance.py','releases.py',
-             'session_state.py','team_ssh.py','policy.py','configuration.py','runtime_controls.py','activity.py','checkpoints.py','extension_risks.py')
+             'session_state.py','team_ssh.py','policy.py','configuration.py','runtime_controls.py','activity.py','checkpoints.py','extension_risks.py','harness_tools.py')
 KIT_FILES = ('codex-api.yaml','codex-api.dockerfile','config.toml','models.json',
-             'model-template.json','runtime-policy.json','entrypoint.sh','preferences.py','quota-client.py','quota-notice.py','web-tool.py','npmrc','local-tools.py')
+             'model-template.json','runtime-policy.json','entrypoint.sh','preferences.py','quota-client.py','quota-notice.py','web-tool.py','npmrc','local-tools.py','tool-client.py')
 
 
 def default_sbx():

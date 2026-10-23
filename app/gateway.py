@@ -27,7 +27,7 @@ from workspace_policy import check_workspace
 from settings import ROOT, PORT
 
 
-def credentials(path):
+def credentials(path, *, allow_empty=False):
     p = Path(path)
     if p.is_symlink() or p.stat().st_mode & 0o077: raise Denied("Credential file permissions are unsafe")
     result = {}
@@ -38,6 +38,7 @@ def credentials(path):
         name, value = name.strip(), value.strip()
         if name in result: raise Denied("Duplicate credential field")
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'": value = value[1:-1]
+        if allow_empty and not value: continue
         if not value or any(c in value for c in "\r\n\x00"): raise Denied("Credential is missing or malformed")
         result[name] = value
     return result
@@ -448,16 +449,20 @@ class Broker:
 
     def tavily_usage(self, key):
         conn, response = self.transport("api.tavily.com", "/usage", None, {"Authorization": "Bearer " + key}, method="GET")
-        try: result = read_json(response)
+        try:
+            if response.status!=200:raise Denied('Tavily free balance could not be confirmed. No search request was sent.',code='tool_usage_unconfirmed')
+            result = read_json(response)
         finally: conn.close()
         account, current_key = result.get("account", {}), result.get("key", {})
+        if not isinstance(account,dict) or not isinstance(current_key,dict):raise Denied('Tavily account usage is unavailable.',code='tool_usage_unconfirmed')
         if account.get("current_plan") != "Researcher": raise Denied("Tavily plan is not free Researcher")
         used, limit = account.get("plan_usage"), account.get("plan_limit")
         if type(used) not in (int, float) or type(limit) not in (int, float) or not 0 <= used < limit <= 1000:
             raise Denied("Tavily free remaining credits are unconfirmed or depleted")
-        if account.get("paygo_usage", 0) != 0: raise Denied("Tavily reports paid usage")
+        if type(account.get('paygo_usage')) not in (int,float) or account['paygo_usage'] != 0: raise Denied("Tavily paid usage is nonzero or unverified",code='tool_usage_unconfirmed')
         # null means unspecified, not zero. The separate current UI receipt proves PAYGO is off.
         key_limit = current_key.get("limit")
+        if 'limit' not in current_key or type(current_key.get('usage')) not in (int,float) or current_key['usage']<0:raise Denied('Tavily key usage is unverified.',code='tool_usage_unconfirmed')
         if key_limit is not None:
             key_used = current_key.get("usage")
             if type(key_limit) not in (int, float) or type(key_used) not in (int, float) or key_used + 1 > key_limit:
@@ -465,59 +470,8 @@ class Broker:
         if used + 1 > limit: raise Denied("Whole Tavily operation cannot fit free balance")
 
     def search(self, payload, extract=False):
-        allowed = {"provider", "url"} if extract else {"provider", "query"}
-        if not isinstance(payload, dict) or set(payload) != allowed: raise Denied("Unreviewed search option denied")
-        provider = payload["provider"]
-        receipt = self.receipt(provider)
-        if extract:
-            if provider != "tavily": raise Denied("Only reviewed Tavily extraction is enabled")
-            url = payload["url"]
-            if not isinstance(url, str) or len(url) > 2048: raise Denied("Invalid URL")
-            parsed = urllib.parse.urlsplit(url)
-            if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in (None, 443): raise Denied("Only public HTTPS URLs are allowed")
-            host = parsed.hostname or ""
-            if "." not in host or host.endswith((".local", ".internal", ".localhost")): raise Denied("Private URL denied")
-            try: addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-            except socket.gaierror: raise Denied("URL hostname cannot be verified")
-            if any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses): raise Denied("Private URL denied")
-            request = {"urls": [url], "extract_depth": "basic", "include_images": False, "include_usage": True}
-            route = "/extract"
-        else:
-            query = payload["query"]
-            if not isinstance(query, str) or not 1 <= len(query) <= 1000 or any(c in query for c in ("sk-proj-", "tvly-", "BEGIN PRIVATE KEY")):
-                raise Denied("Search query is invalid or contains credential markers")
-            request = {"query": query}
-            route = "/search"
-        keys = credentials(self.root / "search-keys.env")
-        now = self.ledger.check_clock(); period = now.strftime("%Y-%m")
-        if provider == "tavily":
-            key = keys["TAVILY_API_KEY"]
-            self.tavily_usage(key)
-            if not extract: request.update(search_depth="basic", auto_parameters=False, max_results=5, include_answer=False, include_images=False, include_usage=True)
-            host, amount, headers = "api.tavily.com", 1, {"Authorization": "Bearer " + key}
-        elif provider == "exa":
-            if extract: raise Denied("Exa standalone extraction is disabled")
-            key = keys["EXA_API_KEY"]
-            request.update(type="lite", numResults=5, contents={"highlights": True})
-            host, amount, headers = "api.exa.ai", 20_000, {"x-api-key": key}  # conservative microdollar debit; never refund from estimates
-        else: raise Denied("Provider is disabled")
-        request_id = self.ledger.reserve(provider, period, amount, request)
-        self.unchanged(provider, receipt)
-        self.ledger.dispatch(request_id)
-        conn, response = self.transport(host, route, request, headers)
-        try: result = read_json(response)
-        finally: conn.close()
-        if provider == "tavily":
-            credits = result.get("usage", {}).get("credits")
-            if type(credits) not in (int, float) or credits not in (0, 1): raise Denied("Tavily usage is missing or exceeded reservation")
-            self.ledger.settle(request_id, int(credits))
-        else:
-            estimate = result.get("costDollars", {}).get("total")
-            if type(estimate) not in (int, float) or not 0 <= estimate <= amount / 1_000_000:
-                raise Denied("Exa cost is missing or above conservative debit")
-            self.ledger.settle(request_id, amount)
-        # Tool results are untrusted source material. No response URLs are fetched here.
-        return {"provider": provider, "request_id": request_id, "data": result}
+        from harness_tools import search
+        return search(self,payload,extract=extract)
 
 
 def make_server(root, ledger, port=PORT, transport=upstream):
@@ -580,6 +534,10 @@ def make_server(root, ledger, port=PORT, transport=upstream):
                     if hasattr(broker,'report'):return self.reply(200,broker.report())
                     from activity import snapshot
                     return self.reply(200,snapshot(root,broker.policy(),now=broker.clock()))
+                if self.path == '/tools/status':
+                    if hasattr(broker,'team') or (root/'team-client.json').exists():raise Denied('Shared search and public fetch are disabled; local file search remains available.',code='tool_shared_disabled')
+                    from harness_tools import status
+                    with ledger.mutex:return self.reply(200,status(root,ledger.db,broker.clock()))
                 if self.path != "/v1/models": raise Denied("Endpoint disabled")
                 self.reply(200, {"object": "list", "data": [{"id": name, "object": "model"} for name in broker.policy()['models']]})
             except Denied as error: self.fail(error)
@@ -590,7 +548,7 @@ def make_server(root, ledger, port=PORT, transport=upstream):
             self.expect_stream=False
             try:
                 self.authorized()
-                if self.path not in {"/v1/responses", "/v1/notices/claim", "/v1/quota/request", "/tools/search", "/tools/extract"}: raise Denied("Endpoint disabled")
+                if self.path not in {"/v1/responses", "/v1/notices/claim", "/v1/quota/request", "/tools/search", "/tools/extract", "/tools/call"}: raise Denied("Endpoint disabled")
                 if self.headers.get_all("Transfer-Encoding") or self.headers.get_all("Content-Encoding") or len(self.headers.get_all('Content-Length',[]))!=1: raise Denied("Encoded or ambiguously framed request denied",code='unsupported_request')
                 length = int(self.headers.get("Content-Length", "-1"))
                 if not 0 < length <= 4_000_000: raise Denied("Request size invalid")
@@ -625,6 +583,10 @@ def make_server(root, ledger, port=PORT, transport=upstream):
                         return bool(readable) and self.connection.recv(1,socket.MSG_PEEK)==b''
                     except OSError:return True
                 if self.path == "/v1/responses": broker.openai(payload, headers, chunk,cancelled=cancelled,operation_id=operation_id)
+                elif self.path == '/tools/call':
+                    if (root/'team-client.json').exists():raise Denied('Shared search and public fetch are disabled; local file search remains available.',code='tool_shared_disabled')
+                    from harness_tools import call
+                    self.reply(200,call(broker,payload))
                 else: self.reply(200, broker.search(payload, extract=self.path == "/tools/extract"))
             except Denied as error:
                 self.fail(error,streaming=started)

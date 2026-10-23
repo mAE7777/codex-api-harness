@@ -26,6 +26,18 @@ remote_compaction = "unsupported"
 [agents]
 enabled = false
 
+[mcp_servers.harness]
+command = "/bin/busybox"
+args = ["env", "-i", "IS_SANDBOX=1", "CODEX_HOME=/home/agent/.codex-api", "HOME=/home/agent", "PATH=/usr/bin:/bin", "/usr/bin/python3", "-I", "/etc/codex-api/tool-client.py", "mcp"]
+env = {}
+cwd = "/home/agent"
+env_vars = []
+enabled = true
+enabled_tools = ["status", "fetch", "search", "extract", "files_search"]
+disabled_tools = []
+startup_timeout_sec = 10
+tool_timeout_sec = 50
+
 [features]
 multi_agent = false
 multi_agent_v2 = false
