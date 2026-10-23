@@ -5,6 +5,7 @@
 - Correct the compatibility model catalog to omit unsupported `ultra` reasoning. Keep compatible saved preferences, account configuration, and usage.
 - Reject control characters in pool labels and mixed named/legacy shared baselines. Shared allocation errors now refer to `--tokens`.
 - Show upgrade preparation and its final result in order. Preserve preparation failures and print actionable host rejection codes.
+- Treat subscription config drift from the initial installation as an informational warning. Independent subscription edits no longer fail API diagnostics.
 - Update setup, shared examples, troubleshooting, and contributor rules for configurable pools and tiers. Shorten the README and correct the security version policy.
 
 ## 0.3.0

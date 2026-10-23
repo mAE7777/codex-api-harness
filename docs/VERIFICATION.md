@@ -5,7 +5,7 @@ Release 0.3.1, checked 2026-10-22. Supported integration target: macOS Apple Sil
 | Check | Scope |
 | --- | --- |
 | Portable regression | Run `python3 scripts/check.py` for the current count; fake providers and loopback only |
-| Patch regression | Unsupported compatibility efforts, all ASCII control characters in pool labels, mixed shared baseline flags, allocation diagnostics, host rejection codes, and successful/failed upgrade preparation |
+| Patch regression | Unsupported compatibility efforts, all ASCII control characters in pool labels, mixed shared baseline flags, allocation diagnostics, host rejection codes, subscription baseline warnings, and successful/failed upgrade preparation |
 | Account-specific policy | Empty new installs; one or three pools; owner-reviewed model IDs; limits above the old reference caps; margin and warning validation |
 | Unified validation | Model, reasoning, context/output cap and tier checked together; catalog/defaults/guest contract agree; unknown fields, tiers and mismatched capabilities rejected |
 | Native speed tiers | Actual pinned CLI completed local tool calls through the gateway with Standard, Fast, Flex and Ultrafast using one selected model and a fake provider; selected wire tier checked |

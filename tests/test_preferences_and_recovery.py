@@ -254,6 +254,17 @@ class RecoveryTests(DailyFixture):
 
 
 class DiagnosticTests(DailyFixture):
+    def test_subscription_baseline_drift_warns_but_real_integrity_failure_still_fails(self):
+        self.daily()
+        atomic_json(self.root/'readiness.json',{k:True for k in ('filesystem_tested','network_tested','host_integrations_absent')})
+        for invalid in (False,True):
+            with self.subTest(invalid=invalid),patch.object(controller,'ROOT',self.root),patch.object(controller,'verify_guest'),patch.object(controller,'integrity',side_effect=Denied('Synthetic integrity failure') if invalid else None),patch.object(controller,'workspace_check'),patch.object(controller,'runtime_state',return_value='stopped'),patch.object(controller,'subscription_unchanged',return_value=False),contextlib.redirect_stdout(io.StringIO()):
+                result=controller.doctor()
+            self.assertEqual(result['passed'],not invalid)
+            warning=next(c for c in result['checks'] if c.get('code')=='subscription_config_changed')
+            self.assertEqual(warning['status'],'WARN');self.assertIn('installation-time',warning['scope'])
+        self.assertEqual(self.calls,[])
+
     def test_doctor_is_redacted_and_unknown_free_eligibility_is_only_a_warning(self):
         self.daily()
         data=json.loads((self.root/'verification.json').read_text());data['openai']['count_endpoint_free_confirmed']=False

@@ -224,7 +224,14 @@ def doctor(as_json=False, bundle=False):
     else:check('Dedicated API key file', lambda: bool(credentials(ROOT/'openai-key.env').get('OPENAI_API_KEY')), 'invalid_api_key')
     check('Owner and guest policy',lambda:verify_guest(ROOT),'policy_invalid')
     check('Quota ledger and limits', quota_snapshot, 'quota_state_unavailable')
-    check('Subscription configuration unchanged', subscription_unchanged, 'subscription_config_changed')
+    # This is an installation-time observation, not an API isolation check.
+    # Independent subscription edits must not turn a healthy API doctor red.
+    try:same_subscription_baseline=subscription_unchanged()
+    except Exception:same_subscription_baseline=False
+    comparison={'check':'Subscription configuration baseline','status':'PASS' if same_subscription_baseline else 'WARN',
+                'scope':'Comparison with the installation-time hash only; differences do not identify who changed the file or block API use.'}
+    if not same_subscription_baseline:comparison['code']='subscription_config_changed'
+    checks.append(comparison)
     mode = runtime_state()
     checks.append({'check':'Gateway lifecycle', 'status':'PASS' if mode in {'running','stopped'} else 'FAIL', 'state':mode})
     ready = json.loads((ROOT/'readiness.json').read_text()) if (ROOT/'readiness.json').is_file() else {}

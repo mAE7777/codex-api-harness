@@ -32,6 +32,7 @@ Use the host terminal for maintenance. The guest helper supports usage, the mana
 | `reasoning_not_allowed` | Choose an effort supported by the selected model. CLI effort names alone do not prove API support. |
 | `policy_change_pending` | Repeat the original reviewed policy apply command. Keep its private draft and journal intact. |
 | `policy_shared_authority` | Shared clients use the invitation policy. An initialized coordinator permits allocation changes, but whole-policy replacement is not supported. |
+| `subscription_config_changed` | Informational comparison with the initial installation. Independent subscription edits do not block API use. Review unexpected changes; do not overwrite subscription settings to clear the warning. |
 | `provider_disabled` / free eligibility | Free-only is blocked. Do not mark eligibility verified without evidence. Explicitly allow charges only if intended. |
 | `organization_usage_unknown` | Other organization callers are present or unconfirmed. Stop and review the shared-pool assumption. |
 | `workspace_policy_failed` | Move the named sensitive item outside the project; do not paste its content into chat. |

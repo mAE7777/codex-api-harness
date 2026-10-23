@@ -1,5 +1,6 @@
 """Credential-free explanations for local policy and API failures."""
 EXPLANATIONS = {
+ 'subscription_config_changed': ('The subscription config differs from its installation-time baseline, or that comparison is unavailable.', 'Review independent subscription edits if unexpected. This is informational, does not block API use, and does not prove the API harness changed the file. Do not overwrite subscription settings to clear the warning.'),
  'team_client_required': ('This installation owns the shared coordinator and cannot also run an independent personal ledger.', 'Use a separate client installation joined to that coordinator. Other organization callers must also be coordinated.'),
  'upgrade_recovery_required': ('A code activation was interrupted or the active generation changed.', 'Run codex-api upgrade recover for an interrupted activation. It preserves current usage; never delete the journal or restore an old ledger.'),
  'upgrade_review_required': ('The candidate code, review, layout or runtime pins did not satisfy the updater.', 'Inspect the staged digest and exact failure. Do not overwrite installed files or bypass the check.'),
