@@ -36,6 +36,7 @@ COPY preferences.py /etc/codex-api/preferences.py
 COPY extensions /etc/codex-api/extensions/
 COPY requirements.toml /etc/codex/requirements.toml
 COPY quota-notice.py npmrc /etc/codex-api/
+COPY local-tools.py /etc/codex-api/local-tools.py
 COPY workspace /etc/codex-api/workspace
 COPY quota-client.py /usr/local/bin/codex-api
 COPY entrypoint.sh /usr/local/bin/codex-api-entrypoint

@@ -177,7 +177,7 @@ class Connection:
             return result.returncode==0 and result.stderr.strip()==('Master running (pid='+str(self.child.pid)+')').encode() and self.child.poll() is None
         except (OSError,subprocess.TimeoutExpired):return False
 
-    def request(self, method, route, body=None, *, operation_id=None, control=None):
+    def request(self, method, route, body=None, *, operation_id=None, control=None, run_id=None):
         if 'ssh' in self.config and not self._owned_tunnel():
             raise Denied('The owned encrypted team connection is unavailable. No credential was sent to another loopback listener.',code='team_unavailable',status=503)
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
@@ -185,6 +185,7 @@ class Connection:
         headers = {'Authorization':'Bearer '+self.config['token'], 'Content-Type':'application/json',
                    'Host':'127.0.0.1:'+str(self.config.get('remote_port',self.port))}
         if operation_id: headers['Idempotency-Key'] = operation_id
+        if run_id: headers['X-Codex-Run'] = run_id
         try:
             if control: control.check()
             conn.request(method, route, body=None if body is None else canonical(body), headers=headers)
@@ -259,6 +260,14 @@ class RemoteBroker:
             conn.identity()
             return conn.json('POST', '/v1/notices/claim', {})
 
+    def report(self):
+        with Connection(self.config) as conn:
+            conn.identity()
+            value=conn.json('GET','/v1/report')
+        if not isinstance(value,dict) or value.get('version')!=1 or value.get('provider_requests')!=0 or not isinstance(value.get('recent_requests'),list) or len(value['recent_requests'])>20:
+            raise Denied('The coordinator report format is invalid.',code='team_protocol_error')
+        return value
+
     def request_more(self,payload):
         if not isinstance(payload,dict) or set(payload)!={'group','amount','request_id'} or payload['group'] not in self.policy['pools'] or type(payload['amount']) is not int or not 0<payload['amount']<=policy_limits(self.policy)[payload['group']] or not isinstance(payload['request_id'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,80}',payload['request_id']):
             raise Denied('Choose group A or B and a positive token amount.',code='team_request_invalid')
@@ -277,7 +286,8 @@ class RemoteBroker:
             with Connection(self.config,control=control) as remote:
                 remote.identity(control)
                 control.check(); self.workspace_guard()
-                conn, response = control.call(lambda:remote.request('POST','/v1/responses',normalized,operation_id=operation,control=control), 'team_response_headers',900 if self.policy['defaults']['service_tier']=='flex' else 120,returns_connection=True)
+                from runtime_controls import run_identity
+                conn, response = control.call(lambda:remote.request('POST','/v1/responses',normalized,operation_id=operation,control=control,run_id=run_identity(self.root)), 'team_response_headers',900 if self.policy['defaults']['service_tier']=='flex' else 120,returns_connection=True)
                 try:
                     if response.status != 200:
                         raw = control.call(lambda:response.read(65537),'team_error',30)

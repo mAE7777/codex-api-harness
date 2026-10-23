@@ -58,6 +58,7 @@ def integrity():
 
 def blockers():
     issues = []
+    if (ROOT/'checkpoint-pending.json').exists():issues.append('A project restore was interrupted. Inspect codex-api checkpoint recover before starting more work.')
     if (ROOT/'team').exists() and not (ROOT/'team-client.json').exists():issues.append('This installation owns a shared coordinator. Start a separate joined client instead of an independent personal gateway.')
     try: integrity()
     except Exception: issues.append("Installation integrity has not been verified")
@@ -260,7 +261,11 @@ def doctor(as_json=False, bundle=False):
 
 def explain(code=None, as_json=False):
     from diagnostics import explanation
-    if code == 'permissions':
+    if code == 'network':
+        result={'allowed_runtime_sources':['registry.npmjs.org:443','pypi.org:443','files.pythonhosted.org:443'],
+                'methods':'HTTPS GET and HEAD only','other_sources':'GitHub, private registries and CDN downloads are blocked unless separately reviewed.',
+                'next_step':'Check the failing package domain. Do not import host GitHub, SSH, npm credentials or enable unrestricted network access.'}
+    elif code == 'permissions':
         p=load_policy(ROOT)
         result = {'workspace':str(WORKSPACE), 'models':list(p['models']), 'service_tier':p['defaults']['service_tier'],
                   'host_credentials':'not mounted; real API keys stay on host', 'network':'local gateway; GET/HEAD only on registry.npmjs.org:443, pypi.org:443, files.pythonhosted.org:443',
@@ -300,6 +305,11 @@ def _start(agent_args=()):
     issues = blockers()
     if issues: raise Denied("Startup blocked:\n- " + "\n- ".join(issues))
     if owned_sandbox() is None: raise Denied('The dedicated sandbox is missing; model requests remain disabled.')
+    from runtime_controls import run_identity
+    import uuid
+    run_id=run_identity(ROOT) if 'resume' in agent_args else 'unassigned'
+    if run_id=='unassigned':run_id=uuid.uuid4().hex
+    atomic_json(ROOT/'active-run.json',{'version':1,'run_id':run_id})
     previous=signal.getsignal(signal.SIGINT)
     state={'attaching':True,'cancel_start':False}
     def interrupt(*_):
@@ -395,18 +405,41 @@ def retire():
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["status", "usage", "doctor", "explain", "reconcile", "help", "start", "pause", "stop", "login", "prepare", "reset", "retire", "configure", "credentials", "billing", "policy", "team", "extensions", "protect", "upgrade"])
+    parser.add_argument("command", choices=["status", "usage", "doctor", "explain", "reconcile", "help", "start", "pause", "stop", "login", "prepare", "reset", "retire", "configure", "credentials", "billing", "policy", "team", "extensions", "protect", "upgrade", "report", "session", "controls", "output", "checkpoint"])
     parser.add_argument("agent_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     # Pre-0.3 launchers route unknown words through start; retain that launcher
     # verbatim while recognizing the new owner-only policy command here.
-    if args.command=='start' and args.agent_args[:1]==['policy']:args.command='policy';args.agent_args=args.agent_args[1:]
-    if args.agent_args and args.command not in {'start','doctor','explain','reconcile','configure','prepare','billing','policy','credentials','team','extensions','protect','upgrade'} and not (args.command in {'status','usage'} and args.agent_args==['--json']): parser.error("This maintenance command does not accept these arguments")
+    if args.command=='start' and args.agent_args[:1] and args.agent_args[0] in {'policy','report','session','controls','output','checkpoint'}:args.command=args.agent_args.pop(0)
+    if args.agent_args and args.command not in {'start','doctor','explain','reconcile','configure','prepare','billing','policy','credentials','team','extensions','protect','upgrade','report','session','controls','output','checkpoint'} and not (args.command in {'status','usage'} and args.agent_args==['--json']): parser.error("This maintenance command does not accept these arguments")
     try:
         if (ROOT/'policy-pending.json').exists() and args.command not in {'policy','status','usage','doctor','explain','stop','pause','help'}:raise Denied('Repeat the original reviewed policy apply before changing this installation.',code='policy_change_pending')
         if (ROOT/'upgrade-pending.json').exists() and args.command not in {'upgrade','status','usage','doctor','explain','stop','pause','help'}:
             raise Denied('Complete codex-api upgrade recover before changing this installation.',code='upgrade_recovery_required')
         if args.command in {'status','usage'}: status(as_json=args.agent_args==['--json'],usage_only=args.command=='usage')
+        elif args.command=='report':
+            from activity import command
+            command(ROOT,args.agent_args)
+        elif args.command=='session':
+            if args.agent_args[:1]==['native']:
+                if args.agent_args not in (['native'],['native','--json']):raise Denied('Use session native [--json].')
+                integrity()
+                if owned_sandbox() is None:raise Denied('The owned API sandbox is missing.')
+                return subprocess.run([str(SBX),'exec',NAME,'/usr/local/bin/codex-api-entrypoint','sandbox','-P','codex_api_workspace','--include-managed-config','-C',str(WORKSPACE),'--','python3','-I','/usr/local/bin/codex-api','session',*args.agent_args],env=clean_env()).returncode
+            else:
+                from activity import session
+                session(ROOT,args.agent_args)
+        elif args.command=='controls':
+            from runtime_controls import command
+            command(ROOT,args.agent_args)
+        elif args.command=='checkpoint':
+            from checkpoints import command
+            command(ROOT,WORKSPACE,args.agent_args)
+        elif args.command=='output':
+            integrity()
+            if owned_sandbox() is None:raise Denied('The owned sandbox is missing.',code='gateway_state_unavailable')
+            result=subprocess.run([str(SBX),'exec',NAME,'/usr/local/bin/codex-api-entrypoint','sandbox','-P','codex_api_workspace','--include-managed-config','-C',str(WORKSPACE),'--','python3','-I','/etc/codex-api/local-tools.py','output',*args.agent_args],env=clean_env())
+            return result.returncode
         elif args.command=='doctor':
             if len(args.agent_args)!=len(set(args.agent_args)) or set(args.agent_args)-{'--json','--bundle'}: parser.error('doctor accepts --json and --bundle')
             return 0 if doctor(as_json='--json' in args.agent_args,bundle='--bundle' in args.agent_args)['passed'] else 1
@@ -475,7 +508,7 @@ def main():
         elif args.command=='billing':
             from onboarding import billing
             billing(ROOT,args.agent_args)
-        elif args.command=='help':print('Start: codex-api [Codex arguments or subcommand]\nExamples: codex-api -m gpt-6.1-sol; codex-api resume --last\nDaily usage: codex-api usage (also available as !codex-api usage inside the CLI)\nDiagnostics: codex-api doctor; codex-api explain CODE; codex-api explain permissions\nUsage recovery: codex-api reconcile (read-only by default)\nDetails: codex-api status\nExit: Ctrl+C when idle or /quit; cleanup is automatic\nBackup stop: codex-api stop (from another terminal or after the original terminal closes)')
+        elif args.command=='help':print('Start: codex-api [Codex arguments or subcommand]\nResume: codex-api resume --last\nDaily usage: codex-api usage (also available as !codex-api usage inside the CLI)\nRequest details: codex-api report [--json]\nRecovery: codex-api session list/handoff/native; codex-api reconcile (read-only by default)\nDiagnostics: codex-api doctor; codex-api explain CODE; codex-api explain permissions/network\nApproved settings: codex-api policy show; codex-api controls show\nOptional output: codex-api output run -- COMMAND; codex-api output show RECORD_ID\nOptional file undo: codex-api checkpoint create FILE; codex-api checkpoint preview ID\nReviewed skills: codex-api extensions list\nUpdates: codex-api upgrade list\nDetails: codex-api status\nExit: Ctrl+C when idle or /quit; cleanup is automatic\nBackup stop: codex-api stop (from another terminal or after the original terminal closes)')
         elif args.command == "pause": (ROOT / "paused").touch(mode=0o600, exist_ok=True); print("New requests are blocked. Usage from requests already sent will still be recorded.")
         elif args.command == "stop": stop(); print("Dedicated environment stopped.")
         elif args.command == "login": subprocess.run([str(SBX), "login"], env=clean_env(), check=True)

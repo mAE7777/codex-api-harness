@@ -82,7 +82,7 @@ def acceptance():
     with tempfile.TemporaryDirectory(prefix='.codex-api-check-',dir=WORKSPACE) as temporary:
         project=Path(temporary);(project/'.env').write_text('PUBLIC_TEST_SENTINEL_ONLY')
         (project/'.env.example').write_text('API_KEY=your_api_key\n')
-        code='''import json,os,subprocess,sys;from pathlib import Path
+        code='''import json,os,runpy,subprocess,sys,tempfile;from pathlib import Path
 p=Path(sys.argv[1]);out={}
 try:(p/".env").read_bytes();out["sensitive_file_denied"]=False
 except OSError:out["sensitive_file_denied"]=True
@@ -93,6 +93,12 @@ out["subscription_not_mounted"]=not Path(sys.argv[2]).exists()
 out["private_install_not_mounted"]=not Path(sys.argv[3]).exists()
 out["codex_pinned"]="0.162.1" in subprocess.check_output(["codex","--version"],text=True)
 out["playwright_pinned"]="0.1.22" in subprocess.check_output(["playwright-cli","--version"],text=True)
+helper=runpy.run_path("/etc/codex-api/local-tools.py")
+storage=helper["location"]()
+with tempfile.TemporaryFile(dir=storage) as probe:probe.write(b"PUBLIC_LOCAL_OUTPUT_CHECK");probe.flush()
+out["output_storage_writable"]=str(storage)=="/tmp/codex-api-output"
+inventory=helper["native_sessions"]()
+out["api_session_inventory_readonly"]=inventory["provider_requests"]==0 and inventory["index_modified"] is False
 out["network"]={}
 for url,method,expected in [("https://api.openai.com/v1/models","GET",False),("https://github.com","GET",False),("https://example.com","GET",False),("https://registry.npmjs.org/is-number","GET",True),("https://pypi.org/simple/idna/","GET",True),("https://registry.npmjs.org/-/npm/v1/security/audits/quick","POST",False)]:
  r=subprocess.run(["curl","-sS","--max-time","8","-o","/dev/null","-w","%{http_code}","-X",method,url],capture_output=True,text=True)

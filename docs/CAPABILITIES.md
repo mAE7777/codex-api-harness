@@ -11,6 +11,14 @@ This release supports macOS Apple Silicon, Python 3.11.8+, Docker Sandboxes 0.49
 | Shell, patches, Code Mode and local Playwright | Supported | One original project mount; restricted runtime network |
 | Exact count, input + maximum output reservation | Supported | Unknown terminal usage keeps the full hold |
 | One English line per pool; configurable daily notice | Supported | Warnings do not authorize requests |
+| Request details and accounting decomposition | Supported | Content-free, read-only; historical missing counters remain unknown |
+| Wrapper run token/request ceilings and same-error pause | Optional | Exact reviewed controls; no retry/refund; resume retains the run |
+| Daily/monthly USD upper-bound budgets | Optional | Reviewed expiring prices and prior-use baselines; coordinator-wide in shared mode; not final billing proof |
+| Private host-storage admission floor | Optional | No continuous VM/process disk quota or automatic deletion |
+| API-only native session inventory and handoff | Supported | No subscription history, index repair or extra model summary |
+| Offline extension risk findings | Supported | Version/source-bound review hints; not a security certification |
+| Command output summary and retained original | Optional | Guest only; bounded private tail, explicit truncation, original exit status |
+| Selected text-file checkpoints | Optional | Explicit private copies; stopped, reviewed restore; external editor races and remote effects remain outside the guarantee |
 | Multiple members in one project or different projects | Optional | One authoritative organization coordinator |
 | Shared project cap, member cap, temporary transfer | Optional | Atomic accounting; used/reserved tokens cannot transfer |
 | Quota request and owner approval | Optional | No automatic budget increase; repeated approval is idempotent |
@@ -37,3 +45,5 @@ Unknown routes, tool types, service tiers and request fields fail closed. Errors
 OpenAI's [spending-controller guidance](https://developers.openai.com/cookbook/articles/per_run_spending_controller_responses_api) supports atomic shared reservation and conservative uncertain usage. Its [organization Usage API](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/completions) provides grouped account reporting, not an admission completeness guarantee. These are independent of complimentary eligibility.
 
 [Cycles](https://github.com/runcycles/cycles-protocol) informed hierarchical atomic budgets and explicit operation identity. [OCTG](https://github.com/yohi/octg) informed conservative accounting/recovery; [Prodex](https://github.com/christiandoxa/prodex) informed diagnostics and capability boundaries. These are references, not runtime dependencies or security certifications. No third-party code from those projects is bundled.
+
+[ccusage](https://github.com/ccusage/ccusage), [LoopGuard](https://github.com/loop-eng/loopguard), [Cline](https://github.com/cline/cline), [Aider](https://github.com/Aider-AI/aider), [RTK](https://github.com/rtk-ai/rtk), [SkillSpector](https://github.com/NVIDIA/SkillSpector), and [Cisco Skill Scanner](https://github.com/cisco-ai-defense/skill-scanner) informed the report, bounded-error, undo and review designs. They are not installed, executed, copied into this project or given credentials. Read [request controls](REQUEST_CONTROLS.md) for this implementation's narrower guarantees.

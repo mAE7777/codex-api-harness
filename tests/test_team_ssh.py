@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from guard import Denied, atomic_json
 from shared import Team, make_server
@@ -41,6 +41,32 @@ class TeamSSHTests(unittest.TestCase):
     def tearDown(self):
         if self.team:self.team.close()
         self.temp.cleanup()
+
+    def test_shutdown_falls_back_to_the_owned_child_if_its_group_is_missing(self):
+        from team_ssh import ManagedSSHD
+        process=Mock();process.pid=12345;process.poll.return_value=None
+        process.wait.side_effect=[subprocess.TimeoutExpired('owned-sshd',3),0]
+        with patch('team_ssh.os.killpg',side_effect=ProcessLookupError):ManagedSSHD(process).stop()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_args.kwargs['timeout'],10)
+
+    def test_unconfirmed_shutdown_has_an_actionable_error_without_pid_discovery(self):
+        from team_ssh import ManagedSSHD
+        process=Mock();process.pid=12345;process.poll.return_value=None
+        process.wait.side_effect=subprocess.TimeoutExpired('owned-sshd',3)
+        with patch('team_ssh.os.killpg'),self.assertRaises(Denied) as error:ManagedSSHD(process).stop()
+        self.assertEqual(error.exception.code,'team_ssh_stop_unconfirmed');process.kill.assert_called_once_with()
+
+    def test_tunnel_stop_failure_still_releases_the_coordinator_ledger(self):
+        from guard import Ledger
+        self.team.close();self.team=None
+        server=make_server(self.root,port=0)
+        server.tunnel=Mock();server.tunnel.stop.side_effect=Denied('Synthetic stop failure',code='team_ssh_stop_unconfirmed')
+        try:
+            with self.assertRaises(Denied):server.close_shared()
+            self.assertTrue(server.team.stopping.is_set())
+            ledger=Ledger(self.root/'state');ledger.close()
+        finally:server.server_close()
 
     def test_key_wire_format_is_complete_and_only_ed25519(self):
         self.assertEqual(parse_public_key(example_key()+' comment'),example_key())

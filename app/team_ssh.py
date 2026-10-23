@@ -221,7 +221,13 @@ class ManagedSSHD:
             except subprocess.TimeoutExpired:
                 try:os.killpg(process.pid,signal.SIGKILL)
                 except ProcessLookupError:pass
-                process.wait(timeout=3)
+                # A native daemon can leave the original process group. The
+                # retained Popen handle still identifies our own direct child;
+                # never look up or kill an unrelated daemon from a PID file.
+                process.kill()
+                try:process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    raise Denied('The dedicated SSH child has not confirmed shutdown. Shared admission is stopped; retry stopping this coordinator. No system SSH service was changed.',code='team_ssh_stop_unconfirmed') from None
 
 
 def start(team,coordinator_port):

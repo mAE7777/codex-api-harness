@@ -282,7 +282,7 @@ def _verify_manifest(root,manifest,payload=None):
 
 def _policy_digest(root):
     root=Path(root);parts={}
-    for name in ('settings.json','protected-paths.json','extensions/registry.json'):
+    for name in ('settings.json','protected-paths.json','extensions/registry.json','controls.json'):
         path=root/name
         if path.exists():
             if path.is_symlink():fail('Managed policy must not be linked.')
@@ -295,12 +295,12 @@ def _policy_digest(root):
 def _permanent_fingerprint(root):
     """Detect test-written private state without backing up or restoring it."""
     root=Path(root);files={}
-    for name in ('openai-key.env','openai-key.next.env','search-keys.env','gateway.token','verification.json','team-client.json'):
+    for name in ('openai-key.env','openai-key.next.env','search-keys.env','gateway.token','verification.json','team-client.json','controls.json','active-run.json','checkpoint-pending.json'):
         path=root/name
         if path.exists():
             if path.is_symlink() or not path.is_file():fail('A private state file is unsafe.')
             files[name]=hashlib.sha256(path.read_bytes()).hexdigest()
-    for name in ('state','team/state'):
+    for name in ('state','team/state','checkpoints'):
         path=root/name
         if path.exists():
             if path.is_symlink() or not path.is_dir():fail('Private accounting storage is unsafe.')
@@ -366,8 +366,15 @@ def _compatible(manifest,report,*,rollback=False):
 def _state_compatible(root,report):
     # Older guards cannot interpret a generalized policy or normalized shared
     # allocation tables. Retaining the guest kit alone cannot make them safe.
-    if _version(report['harness_version'])>=(0,3,0):return
     root=Path(root)
+    if _version(report['harness_version'])<(0,4,0):
+        from guard import readonly_database
+        for authority in (root,root/'team'):
+            if (authority/'controls.json').exists():fail('Historical code cannot enforce the reviewed run or spending controls. Keep version 0.4.0 or newer.')
+            if (authority/'state/usage.sqlite3').is_file():
+                with readonly_database(authority/'state') as db:
+                    if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_config'").fetchone() and db.execute('SELECT 1 FROM runtime_config').fetchone():fail('Historical code would bypass reviewed request controls. Existing usage and controls were preserved.')
+    if _version(report['harness_version'])>=(0,3,0):return
     receipt=_json(root/'verification.json').get('openai',{})
     client=_json(root/'team-client.json') if (root/'team-client.json').exists() else {}
     if receipt.get('policy',{}).get('models') or 'policy' in client or (root/'team').exists():

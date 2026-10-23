@@ -1,5 +1,7 @@
 # Operations
 
+For request-level usage, run budgets, error pauses, storage checks, API session inventory, explicit file undo and optional USD ceilings, see [request controls](REQUEST_CONTROLS.md). `codex-api report` explains held tokens without changing the normal usage display or contacting a provider. `codex-api explain network` lists allowed dependency sources without granting access.
+
 ## Everyday commands
 
 | Need | Command |
@@ -46,6 +48,7 @@ Use the host terminal for maintenance. The guest helper supports usage, the mana
 | Installation/runtime integrity | A pinned file or executable changed. Review the update; do not disable the check. |
 | Shared Docker policy | Review the exact conflict. Do not reset other people's sandboxes or broad global settings. |
 | `team_unavailable` | Keep the owner Mac awake and its coordinator running; verify the encrypted connection. No independent quota or provider fallback exists. |
+| `team_ssh_stop_unconfirmed` | Shared admission is stopped and the ledger is closed, but the owned SSH child's exit was not confirmed. Retry coordinator shutdown; do not kill a system SSH service or reset accounting. |
 | `team_auth_failed` / `team_identity_changed` | Verify the private invitation with the owner; do not bypass host-key or identity checks. |
 | `duplicate_operation` | The explicit request ID already exists. Inspect the original before intentionally submitting new work. |
 | `terminal_usage_invalid` / `terminal_usage_conflict` | Malformed usage was rejected; the conservative reservation remains held. |

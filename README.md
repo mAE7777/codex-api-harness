@@ -37,6 +37,8 @@ The first number is the remaining capacity. The second is the ceiling after the 
 
 Budgets reset at 00:00 UTC and do not accumulate. Uncertain requests and usage near midnight can reduce the next day's balance. `codex-api usage --json` shows the accounting date, reset time, baseline, and reservations.
 
+Use `codex-api report` for request phases, input/cache/output details and an explanation of held tokens. Optional [request controls](docs/REQUEST_CONTROLS.md) add reviewed run limits, repeated-error pauses, a host-storage floor and USD budgets. They preserve current settings and make no automatic billing or permission changes. Reports leave the normal usage display unchanged.
+
 ## Included controls
 
 - One reviewed policy sets models, quota pools, limits, reasoning, output caps, warnings, and a fixed service tier. Standard, Fast, Flex, and Ultrafast require compatible models and account permissions. Automatic tier selection and paid fallback are disabled.
@@ -64,11 +66,15 @@ codex-api doctor                 # local checks; no provider call
 codex-api policy show            # models, limits, and selected tier
 codex-api explain CODE           # reason and next step for a rejection
 codex-api reconcile              # inspect uncertain usage
+codex-api session handoff        # local recovery summary; no model call
+codex-api session native         # API session IDs; no index repair
 codex-api stop                   # stop after the original terminal disappears
 codex-api retire                 # remove the owned sandbox and archive private state
 ```
 
 [Operations](docs/OPERATIONS.md) covers recovery, key rotation, protected paths, and removal. [Updates](docs/UPDATES.md) preserves current credentials and usage through reviewed code changes. Policy changes require a stopped session. An initialized coordinator permits allocation changes, but whole-policy replacement is not supported in this release.
+
+Optional output filtering retains a bounded private original and the command exit status. Explicit file checkpoints support reviewed undo without changing Git history. Neither is enabled as a background workspace copier. See [request controls](docs/REQUEST_CONTROLS.md) for their commands and limits.
 
 [Capability reference](docs/CAPABILITIES.md) · [Release verification](docs/VERIFICATION.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 

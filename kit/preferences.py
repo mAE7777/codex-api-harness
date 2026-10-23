@@ -220,7 +220,7 @@ def protected_cli_args(config):
     return result
 
 
-def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=Path('/etc/codex-api/extensions'), *, return_policy=False):
+def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=Path('/etc/codex-api/extensions'), *, return_policy=False, persist=True):
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     pref_path = home/'preferences.json'
     prefs = {}
@@ -236,7 +236,10 @@ def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=
         prefs['model_reasoning_effort']=p['models'][selected]['reasoning_efforts'][0]
     base = base_path.read_text()
     # Hash-verified instructions are part of managed policy, never preferences.
-    instructions=extension_instructions(managed_extensions(extensions_path))
+    instructions=('Local harness commands: codex-api usage shows remaining tokens; codex-api report explains requests and holds; '
+                  'codex-api session native lists API session IDs without repairing history. '
+                  'For noisy test/build output, optional codex-api output run -- COMMAND preserves a bounded private original and its exit status. '
+                  'Do not treat missing metadata or failed tools as free use.\n'+extension_instructions(managed_extensions(extensions_path)))
     if instructions:
         if re.search(r'^developer_instructions\s*=',base,re.M):raise ValueError('Unexpected protected developer instructions')
         base='developer_instructions = '+json.dumps(instructions)+'\n'+base
@@ -257,8 +260,9 @@ def prepare(home, base_path=Path('/etc/codex-api/config.toml'), extensions_path=
     for key in (*ROOT_ENUMS,'model','model_reasoning_effort'): parsed.pop(key, None); immutable.pop(key, None)
     parsed.pop('tui', None)
     if parsed != immutable: raise ValueError('Preference merge changed protected policy')
-    atomic_write(home/'config.toml', rendered)
-    atomic_write(pref_path, json.dumps(prefs, sort_keys=True) + '\n')
+    if persist:
+        atomic_write(home/'config.toml', rendered)
+        atomic_write(pref_path, json.dumps(prefs, sort_keys=True) + '\n')
     return (prefs,tomllib.loads(rendered)) if return_policy else prefs
 
 
@@ -284,7 +288,8 @@ def api_home():
 def run(args):
     home=api_home()
     overrides=validate_cli_args(args)
-    _,policy=prepare(home,return_policy=True)
+    maintenance='sandbox' in args[:2]
+    _,policy=prepare(home,return_policy=True,persist=not maintenance)
     policy=cli_policy(policy,overrides)
     child = None
     previous = signal.getsignal(signal.SIGINT)
@@ -297,7 +302,8 @@ def run(args):
         child = subprocess.Popen(['codex', *protected_cli_args(policy), *args],env=env)
         return child.wait()
     finally:
-        try: save(home)
+        try:
+            if not maintenance:save(home)
         except (OSError, ValueError): print('API Codex: preferences could not be saved.', file=sys.stderr)
         signal.signal(signal.SIGINT, previous)
         signal.signal(signal.SIGTERM, old_term)

@@ -646,7 +646,7 @@ class Ledger:
                 if prior[0] != digest: raise Denied('Conflicting reconciliation; recorded usage was not changed')
                 return {'applied':False, 'request_id':plan['request_id'], 'action':action}
             row = self.db.execute('SELECT scope,period,reserved,phase,created FROM requests WHERE id=?', (plan['request_id'],)).fetchone()
-            if not row or row[0] not in {'openai:A','openai:B'}: raise Denied('This receipt requires a classified daily-pool request')
+            if not row or not re.fullmatch(r'openai:[A-Za-z][A-Za-z0-9_-]{0,15}',row[0]) or row[0]=='openai:metered': raise Denied('This receipt requires a classified daily-pool request')
             scope, period, reserved, phase, created = row
             if phase not in {'reserved','unknown','rejected'} or phase != plan['expected_phase'] or reserved != plan['expected_reserved_tokens']:
                 raise Denied('Request state changed; review a new receipt before applying')
@@ -661,6 +661,12 @@ class Ledger:
             self._terminal_carry(plan['request_id'],scope,period,created,charged,today)
             self.db.execute('INSERT INTO resolutions VALUES (?,?,?,?,?,?,?)',
                             (plan['resolution_id'],plan['request_id'],digest,action,actual,hashlib.sha256(canonical(evidence)).hexdigest(),self.clock()))
+            if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_requests'").fetchone():
+                # A total-only receipt cannot reconstruct the input/output price
+                # split. Keep its full USD upper bound unless no model use was
+                # specifically verified; counting may still have incurred cost.
+                self.db.execute("UPDATE runtime_requests SET phase='reconciled',actual_tokens=?,cost_actual=CASE WHEN ?='confirm_unused' THEN CASE WHEN counted=1 THEN count_hold ELSE 0 END ELSE cost_hold END,completed=? WHERE request_id=?",
+                    (charged,action,self.clock(),plan['request_id']))
         return {'applied':True, 'request_id':plan['request_id'], 'action':action,
                 'charged_tokens':charged, 'safety_stop_preserved':(self.root/'safety-stop.json').exists()}
 

@@ -15,6 +15,8 @@ codex-api extensions inspect FULL_DIGEST
 
 Staging reads only that explicit folder, creates a private snapshot, and reports every file hash, code file, and referenced network host. Nothing is executed or enabled. The report gives a local `review_directory`; read **every file there**, including supporting scripts and references. An assistant can do that review, explain the findings in plain language, and continue only within the owner's authorization.
 
+Stage and inspect also return an offline `risk_review`: file/line findings, detector/rule version and a source-bound review digest. It never calls a model or cloud scanner and prints no matched text. High-risk findings require the additional exact `--risk-digest RISK_REVIEW_DIGEST` after deliberate review; this does not replace `--reviewed` or `--allow-scripts`. New approvals record that risk digest. Changes to their detector rules require inspection and approval again. Older approvals remain compatible and are not silently labelled as scanned under the new rules. No findings is not proof of safety.
+
 Approve the exact reviewed bytes:
 
 ```sh

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Add content-free request reports with pool decomposition, input/cache/output/reasoning details, run IDs and recovery guidance. Normal usage output is unchanged.
+- Add optional digest-reviewed run ceilings, repeated-error pauses, a private host-storage floor and integer USD daily/monthly reservations with expiring upper-bound prices. Shared requests use coordinator-wide USD accounting; uncertain usage remains held.
+- Add API-only native session inventory, mechanical handoff, safe acknowledgement, and observation reconciliation. Fix reconciliation for named token pools.
+- Add offline extension risk findings and source/rule-bound acknowledgements. Existing approvals remain compatible; native plugins, MCP and hooks remain blocked.
+- Add explicit bounded command-output filtering and reviewed text-file checkpoints, including restore previews, conflict checks and interrupted-restore recovery. No API traffic rewriting, automatic cleanup or project synchronization.
+- Preserve credentials, token policy, histories and usage on upgrade. Refuse rollback that would bypass approved request controls. Document residual provider, concurrency, storage and secret-protection boundaries.
+- Confirm owned SSH child shutdown after a process-group signal fails; close coordinator accounting even when tunnel cleanup raises an error. Include new commands in local help.
+
 ## 0.3.1
 
 - Correct the compatibility model catalog to omit unsupported `ultra` reasoning. Keep compatible saved preferences, account configuration, and usage.

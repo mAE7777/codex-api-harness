@@ -43,3 +43,9 @@ policy.json
 team-policy.json
 *.key
 *.sock
+controls.json
+controls-draft.json
+active-run.json
+checkpoint-pending.json
+checkpoints/
+controls-stop.json

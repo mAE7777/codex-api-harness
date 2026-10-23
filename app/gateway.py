@@ -239,22 +239,29 @@ class Broker:
     def unchanged(self, provider, receipt):
         if canonical(self.receipt(provider)) != canonical(receipt): raise Denied("Verification changed before dispatch")
 
-    def openai(self, payload, send_headers, send_chunk, cancelled=lambda:False, *, operation_id=None, operation_namespace='local'):
+    def openai(self, payload, send_headers, send_chunk, cancelled=lambda:False, *, operation_id=None, operation_namespace='local', run_id=None):
         operation = {}
         p=self.policy()
+        from runtime_controls import Runtime
+        authority=self.team.ledger if hasattr(self,'team') else self.ledger
+        controls_root=self.team.root.parent if hasattr(self,'team') else self.root
+        namespace='member:'+self.member if hasattr(self,'member') else 'local'
+        operation['runtime']=Runtime(controls_root,authority,p,namespace=namespace,clock=self.clock)
+        operation['run_id']=run_id
         self.ledger.overlap_seconds=p['defaults']['request_deadline_seconds']+15
         with RequestControl(cancelled, lambda:(self.root/'paused').exists() or (self.root/'policy-pending.json').exists(),total=p['defaults']['request_deadline_seconds']) as control:
             try:
                 result = self._openai(payload, send_headers, send_chunk, control, operation, operation_id, operation_namespace)
-                if operation: self.ledger.mark_operation(operation['id'], 'completed')
+                if operation.get('id'): self.ledger.mark_operation(operation['id'], 'completed')
                 return result
             except Exception as error:
                 try: control.check()
                 except Denied as cancelled_error: error = cancelled_error
-                if operation:
+                if operation.get('id'):
                     # Admission itself is durable, even if a counting call failed.
                     # A later replay must never silently retry an uncertain call.
                     self.ledger.mark_operation(operation['id'], 'failed')
+                    operation['runtime'].failed(operation['id'],error)
                     if isinstance(error, Denied): error.details.setdefault('correlation_id', operation['id'])
                     else: error.correlation_id = operation['id']
                 raise error
@@ -278,6 +285,10 @@ class Broker:
             raise Denied('Free-only mode does not establish complimentary eligibility for this service tier. No request was sent.',code='free_eligibility_unconfirmed')
         utc_admission(self.clock())
         operation['id'] = self.ledger.begin_operation(normalized, operation_id, namespace=operation_namespace)
+        runtime=operation['runtime']
+        runtime.start(operation['id'],normalized,operation['run_id'])
+        if runtime.config['spending'] and not daily:
+            raise Denied('Reviewed cost limits require exact counting and the daily token guard.',code='controls_invalid')
         key = credentials(getattr(self,'key_path',self.root / "openai-key.env"))["OPENAI_API_KEY"]
         headers = {"Authorization": "Bearer " + key, "OpenAI-Organization": receipt["organization_id"], "OpenAI-Project": receipt["project_id"]}
         metered = receipt.get("billing_policy") == "metered"
@@ -292,6 +303,7 @@ class Broker:
             count_fields={k:v for k,v in normalized.items() if k in {'model','input','instructions','tools','tool_choice','parallel_tool_calls','reasoning','text','truncation'}}
             self.ledger.mark_operation(operation['id'], 'counting')
             utc_admission(self.clock())
+            runtime.count_started(operation['id'])
             conn,response=request('/v1/responses/input_tokens',count_fields,headers,'input_count',30)
             try:
                 if response.status==200:verify_provider_clock(response,self.clock())
@@ -300,20 +312,25 @@ class Broker:
             if type(count) is not int or count<0: raise Denied('Exact input token counting failed. No model request was sent.',code='input_count_unavailable')
             control.check()
             if count+normalized['max_output_tokens']>p['models'][normalized['model']]['context_window']:raise Denied('The counted input plus output reservation exceeds the approved model context window. Start a new conversation or compact it; no model request was sent.',code='context_length_exceeded')
+            runtime.reserve(operation['id'],count,normalized['max_output_tokens'])
             request_id=self.ledger.reserve_daily(group,ceiling,count+normalized['max_output_tokens'],normalized)
         elif metered:
+            if runtime.config['session_tokens'] is not None:
+                raise Denied('A run token limit requires exact counting and the daily guard.',code='controls_invalid')
             # Do not call a separate counting endpoint or assert unverified free eligibility.
             request_id = self.ledger.begin_metered(normalized)
         else:
             count_fields = {k: v for k, v in normalized.items() if k in {"model", "input", "instructions", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "text", "truncation"}}
             self.ledger.mark_operation(operation['id'], 'counting')
             utc_admission(self.clock())
+            runtime.count_started(operation['id'])
             conn, response = request('/v1/responses/input_tokens', count_fields, headers, 'input_count', 30)
             try:
                 if response.status==200:verify_provider_clock(response,self.clock())
                 count = control.call(lambda:read_json(response).get('input_tokens'), 'input_count', 30)
             finally: conn.close()
             if type(count) is not int or count < 0: raise Denied("Exact input count is unavailable")
+            runtime.reserve(operation['id'],count,normalized['max_output_tokens'])
             now = self.ledger.check_clock()
             period = now.strftime("%Y-%m-%d")
             group = model_pools(p)[normalized["model"]]
@@ -324,15 +341,17 @@ class Broker:
             self.workspace_guard()
             self.unchanged("openai", receipt)
             utc_admission(self.clock(),counted=daily or not metered)
+            runtime.dispatch(operation['id'],request_id)
             if daily: self.ledger.dispatch_daily(request_id)
             elif not metered: self.ledger.dispatch(request_id)
             self.ledger.mark_operation(operation['id'], 'dispatched')
         except Exception:
-            if daily:self.ledger.void_unsent(request_id)
+            if daily or not metered:self.ledger.void_unsent(request_id)
             raise
         phase_timeout=900 if p['defaults']['service_tier']=='flex' else 120
         conn, response = request('/v1/responses', normalized, headers, 'response_headers', phase_timeout)
         terminal = None
+        terminal_response = None
         disconnected = False
         def accept_terminal(candidate, *, settle=True):
             nonlocal terminal
@@ -344,12 +363,15 @@ class Broker:
                 self.ledger.note_usage_conflict(request_id)
                 raise Denied('Conflicting terminal usage records were received. The full reservation is retained and further model requests are stopped until reconciliation.', code='terminal_usage_conflict', status=502)
             if terminal is None:
-                if settle:self.ledger.settle(request_id, actual)
+                if settle:
+                    self.ledger.settle(request_id, actual)
+                    runtime.settle(operation['id'],candidate,terminal_response)
                 terminal = candidate
         try:
             provider_request_id = response.getheader('x-request-id', '')
             if isinstance(provider_request_id, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', provider_request_id):
                 self.ledger.mark_operation(operation['id'], 'dispatched', provider_request_id=provider_request_id)
+                with runtime.ledger.transaction():runtime.ledger.db.execute('UPDATE runtime_requests SET provider_request_id=? WHERE id=?',(provider_request_id,operation['id']))
             if response.status != 200:
                 error=control.call(lambda:provider_error(response), 'response_error', 30)
                 if 400<=response.status<500: self.ledger.reject(request_id)
@@ -376,6 +398,7 @@ class Broker:
                             event = decode_json(raw)
                             if event.get("type") in {"response.completed", "response.incomplete", "response.failed"}:
                                 response_body = event.get('response')
+                                terminal_response = response_body
                                 if not isinstance(response_body, dict): accept_terminal(False,settle=False)
                                 candidate = response_body.get('usage')
                                 if event.get('type')=='response.failed':
@@ -403,11 +426,13 @@ class Broker:
                     raise Denied('The stream ended inside an unfinished event. The full reservation is retained and no terminal success was forwarded.',code='terminal_usage_missing',status=502)
                 if terminal is not None:
                     self.ledger.settle(request_id,terminal_tokens(terminal))
+                    runtime.settle(operation['id'],terminal,terminal_response)
                     for chunk in terminal_chunks:
                         try:send_chunk(chunk)
                         except (BrokenPipeError,ConnectionResetError):break
             else:
                 body = control.call(lambda:read_json(response, limit=4_000_000), 'response_body', 120)
+                terminal_response = body
                 accept_terminal(body.get("usage") if isinstance(body, dict) else False)
                 send_headers("application/json")
                 try: send_chunk(canonical(body))
@@ -551,6 +576,10 @@ def make_server(root, ledger, port=PORT, transport=upstream):
                     if hasattr(broker,'quota'):return self.reply(200,broker.quota())
                     profile = json.loads((root/'verification.json').read_text()).get('openai', {})
                     return self.reply(200, read_quota(root/'state', policy_limits(broker.policy(profile)), now=broker.clock(),policy=broker.policy(profile)))
+                if self.path == '/v1/report':
+                    if hasattr(broker,'report'):return self.reply(200,broker.report())
+                    from activity import snapshot
+                    return self.reply(200,snapshot(root,broker.policy(),now=broker.clock()))
                 if self.path != "/v1/models": raise Denied("Endpoint disabled")
                 self.reply(200, {"object": "list", "data": [{"id": name, "object": "model"} for name in broker.policy()['models']]})
             except Denied as error: self.fail(error)

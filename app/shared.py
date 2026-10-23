@@ -627,7 +627,7 @@ def make_server(root, port=DEFAULT_PORT, transport=upstream, *, clock=time.time)
                 self.close_connection=True
             else:self.reply(getattr(error,'status',503),{'error':body})
         def auth(self):
-            for header in ('Host','Authorization','Content-Length','Transfer-Encoding','Content-Encoding','Idempotency-Key'):
+            for header in ('Host','Authorization','Content-Length','Transfer-Encoding','Content-Encoding','Idempotency-Key','X-Codex-Run'):
                 if len(self.headers.get_all(header,[]))>1:raise Denied('Duplicate coordinator request header: '+header+'.',code='team_headers_invalid')
             if self.headers.get('Host') not in {'127.0.0.1:'+str(server.server_port),'localhost:'+str(server.server_port)}:raise Denied('Unexpected coordinator Host header.',code='team_host_invalid')
             authorization=self.headers.get('Authorization')
@@ -641,6 +641,9 @@ def make_server(root, port=DEFAULT_PORT, transport=upstream, *, clock=time.time)
                     raise Denied('GET bodies and encoded requests are disabled.',code='team_headers_invalid')
                 if self.path=='/identity':return self.reply(200,{'service':SERVICE,'version':1,'coordinator_id':team.coordinator_id,'member_id':member,'project_id':team._member(member)[0],'policy_digest':policy_digest(team.policy)})
                 if self.path=='/v1/quota':return self.reply(200,team.quota(member))
+                if self.path=='/v1/report':
+                    from activity import snapshot
+                    with team.mutex:return self.reply(200,snapshot(team.root,team.policy,namespace='member:'+member,now=team.clock(),quota=team.quota(member)))
                 if self.path=='/v1/models':return self.reply(200,{'object':'list','data':[{'id':m,'object':'model'} for m in team.policy['models']]})
                 raise Denied('Endpoint disabled')
             except Denied as error:self.fail(error)
@@ -675,7 +678,7 @@ def make_server(root, port=DEFAULT_PORT, transport=upstream, *, clock=time.time)
                         readable,_,_=select.select([self.connection],[],[],0)
                         return bool(readable) and self.connection.recv(1,socket.MSG_PEEK)==b''
                     except OSError:return True
-                broker.openai(payload,headers,chunk,cancelled=cancelled,operation_id=operation,operation_namespace='member:'+member)
+                broker.openai(payload,headers,chunk,cancelled=cancelled,operation_id=operation,operation_namespace='member:'+member,run_id=self.headers.get('X-Codex-Run','unassigned'))
             except Denied as error:self.fail(error,started)
             except Exception:self.fail(Denied('The coordinator state or connection is unavailable. Dispatched reservations remain held; no automatic retry was made.',code='team_state_unavailable',status=503),started)
             finally:
@@ -702,13 +705,16 @@ def make_server(root, port=DEFAULT_PORT, transport=upstream, *, clock=time.time)
     server.start_tunnel=start_tunnel
     def close_shared():
         team.stopping.set()
-        if getattr(server,'tunnel',None):server.tunnel.stop();server.tunnel=None
-        if getattr(server,'admin',None):
-            server.admin.shutdown();server.admin.server_close();server.admin_thread.join()
-            path=team.root/'admin.sock'
-            if path.exists():path.unlink()
-            server.admin=None
-        team.close()
+        try:
+            if getattr(server,'tunnel',None):server.tunnel.stop();server.tunnel=None
+        finally:
+            try:
+                if getattr(server,'admin',None):
+                    server.admin.shutdown();server.admin.server_close();server.admin_thread.join()
+                    path=team.root/'admin.sock'
+                    if path.exists():path.unlink()
+                    server.admin=None
+            finally:team.close()
     server.close_shared=close_shared
     return server
 

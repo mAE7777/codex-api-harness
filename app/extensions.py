@@ -231,8 +231,10 @@ def _registry(root):
     if not isinstance(data, dict) or set(data) != {'version', 'revision', 'approved'} or data['version'] != VERSION or type(data['revision']) is not int or data['revision'] < 0 or not isinstance(data['approved'], dict) or len(data['approved']) > MAX_ACTIVE_SKILLS:
         fail('Extension registry has an unsupported schema.')
     for name, record in data['approved'].items():
-        if not NAME.fullmatch(name) or not isinstance(record, dict) or set(record) != {'digest', 'skill_path', 'allow_scripts', 'allow_implicit'} or not DIGEST.fullmatch(record.get('digest', '')) or type(record['allow_scripts']) is not bool or type(record['allow_implicit']) is not bool:
+        base={'digest', 'skill_path', 'allow_scripts', 'allow_implicit'}
+        if not NAME.fullmatch(name) or not isinstance(record, dict) or set(record) not in (base,base|{'risk_review_digest','risk_detector_version'}) or not DIGEST.fullmatch(record.get('digest', '')) or type(record['allow_scripts']) is not bool or type(record['allow_implicit']) is not bool:
             fail('Extension approval is invalid.')
+        if 'risk_review_digest' in record and (not isinstance(record['risk_review_digest'],str) or not DIGEST.fullmatch(record['risk_review_digest']) or type(record['risk_detector_version']) is not int):fail('Extension risk acknowledgement is invalid.')
     return data
 
 
@@ -287,7 +289,8 @@ def stage(root, source):
                     if path.is_dir(): path.chmod(0o500)
                 snapshot.chmod(0o500)
             atomic_json(candidate, report)
-        return {'digest': digest, **report, 'status': 'staged; not enabled',
+        from extension_risks import scan
+        return {'digest': digest, **report, 'risk_review':scan(files,digest), 'status': 'staged; not enabled',
                 'review_directory': str(snapshot), 'warning': 'Read every staged file before approving. Static checks do not prove instructions or code safe.'}
 
 
@@ -310,7 +313,11 @@ def verify(root):
     for name, approval in sorted(registry['approved'].items()):
         digest = approval['digest']
         if digest not in checked: checked[digest] = _candidate(root, digest)
-        report, _ = checked[digest]
+        report, files = checked[digest]
+        if 'risk_review_digest' in approval:
+            from extension_risks import scan
+            risk=scan(files,digest)
+            if approval['risk_review_digest']!=risk['review_digest'] or approval['risk_detector_version']!=risk['version']:fail('Extension risk rules or reviewed bytes changed. Inspect and approve its current risk review again.')
         skill = next((item for item in report['skills'] if item['name'] == name and item['path'] == approval['skill_path']), None)
         if not skill or report['scripts'] and not approval['allow_scripts']: fail('Extension approval no longer matches its exact skill and capability review.')
         skills.append({**skill, **approval})
@@ -351,8 +358,13 @@ def _kit(root):
     return resolve_payload(root, 'kit')
 
 
-def approve(root, digest, *, reviewed=False, allow_scripts=False, allow_implicit=False, replace=False):
+def approve(root, digest, *, reviewed=False, allow_scripts=False, allow_implicit=False, replace=False, risk_digest=None):
     root = Path(root)
+    from extension_risks import scan
+    _,risk_files=_candidate(root,digest)
+    risk=scan(risk_files,digest)
+    if risk_digest is not None and risk_digest!=risk['review_digest'] or risk['requires_risk_acknowledgement'] and risk_digest!=risk['review_digest']:
+        fail('High-risk findings need a separate exact --risk-digest acknowledgement after file review. No extension was enabled.')
     if not reviewed: fail('Read all staged files, then approve their exact digest with --reviewed. No installation script is run.')
     with _mutation(root):
         report, _ = _candidate(root, digest)
@@ -365,7 +377,8 @@ def approve(root, digest, *, reviewed=False, allow_scripts=False, allow_implicit
                 fail('A skill with this name is already approved. Review the new digest and use --replace to select it.')
         changed = False
         for skill in report['skills']:
-            approval = {'digest': digest, 'skill_path': skill['path'], 'allow_scripts': bool(allow_scripts), 'allow_implicit': bool(allow_implicit)}
+            approval = {'digest': digest, 'skill_path': skill['path'], 'allow_scripts': bool(allow_scripts), 'allow_implicit': bool(allow_implicit),
+                        'risk_review_digest':risk['review_digest'],'risk_detector_version':risk['version']}
             if registry['approved'].get(skill['name']) != approval:
                 registry['approved'][skill['name']] = approval; changed = True
         if len(registry['approved']) > MAX_ACTIVE_SKILLS: fail('At most 32 managed skills may be active; remove unused skills first.')
@@ -471,16 +484,18 @@ def command(root, args):
     approve_parser = sub.add_parser('approve'); approve_parser.add_argument('--digest', required=True)
     approve_parser.add_argument('--reviewed', action='store_true'); approve_parser.add_argument('--allow-scripts', action='store_true')
     approve_parser.add_argument('--allow-implicit', action='store_true'); approve_parser.add_argument('--replace', action='store_true')
+    approve_parser.add_argument('--risk-digest')
     listing = sub.add_parser('list'); listing.add_argument('--json', action='store_true')
     remove_parser = sub.add_parser('remove'); remove_parser.add_argument('name')
     sub.add_parser('verify')
     options = parser.parse_args(args)
     if options.action == 'stage': result = stage(root, options.folder)
     elif options.action == 'inspect':
-        report, _ = _candidate(root, options.digest)
+        report, files = _candidate(root, options.digest)
+        from extension_risks import scan
         result = {'digest': options.digest, **report, 'review_directory': str(Path(root)/'extensions/snapshots'/options.digest),
-                  'warning': 'Read every file in this directory. No file has been executed or enabled.'}
-    elif options.action == 'approve': result = approve(root, options.digest, reviewed=options.reviewed, allow_scripts=options.allow_scripts, allow_implicit=options.allow_implicit, replace=options.replace)
+                  'risk_review':scan(files,options.digest), 'warning': 'Read every file in this directory. No file has been executed or enabled.'}
+    elif options.action == 'approve': result = approve(root, options.digest, reviewed=options.reviewed, allow_scripts=options.allow_scripts, allow_implicit=options.allow_implicit, replace=options.replace,risk_digest=options.risk_digest)
     elif options.action == 'remove': result = remove(root, options.name)
     elif options.action == 'verify': result = {'verified': True, 'build_digest': verify_build(root), **verify(root)}
     else:

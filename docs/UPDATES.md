@@ -2,6 +2,8 @@
 
 Daily use stays the same: enter the project and run `codex-api`. Updating is a separate, stopped-session action. The updater never downloads or executes a candidate automatically.
 
+Version 0.4 adds request observations without resetting token usage. Optional controls, run identity and checkpoints remain permanent private state and are included in update preservation checks. Once request controls are approved, rollback to code older than 0.4 is refused because that code cannot enforce them. Removing the controls file does not bypass the ledger's recorded approval. An interrupted controls apply can be completed by replaying its exact reviewed command.
+
 Installations created with version 0.2 or later keep credentials, settings, and the complete ledger at permanent paths. Versioned application code lives under `releases/`. One atomic `current` pointer selects a generation. The generated Docker kit follows the current protected paths and approved skills. Updates and rollbacks never restore an old ledger, witness, key, account binding, or extension registry.
 
 ## Update

@@ -164,6 +164,10 @@ Do not ask the user to keep doing maintenance commands. Point to `docs/OPERATION
 
 ## Optional capabilities, only when requested
 
+Explain [request controls](docs/REQUEST_CONTROLS.md) briefly when the owner asks about usage or unattended work. `report` and mechanical handoff are available without a new credential or provider call; normal usage stays one English line per pool. Existing installations keep their current limits. Do not invent a per-run or USD allowance. A controls draft proposes three repeated errors and a 128 MiB private host-storage floor, with run/USD ceilings unset. Recommend that small profile when wanted, explain what it pauses, and apply its exact reviewed digest within the owner's authorization. For a currency ceiling, ask for actual limits, verified prior daily/monthly spending and worst-case model/tier/count prices only when needed. Unknown prices stay unconfigured. Joined members use coordinator-owned request controls rather than independent currency ledgers.
+
+Optional output filtering executes only inside the sandbox. File checkpoints copy only explicitly chosen text files and need a stopped, reviewed restore; they are not a new default backup or sensitive-file protection mechanism. Do not create them during setup or copy the project automatically. No additional scanner API keys, telemetry or cloud services are required.
+
 For a skill or skill-only plugin, use [EXTENSIONS.md](docs/EXTENSIONS.md). Inspect the requested local folder only, read every staged file, explain code/network references briefly, and approve the exact digest only after review. Do not import all personal skills, execute remote installers, grant new destinations, or turn on native plugins. Review is not a proof against malicious instructions.
 
 Use [UPDATES.md](docs/UPDATES.md) for a version change. Stage without executing candidate code; review its digest before running its candidate checks. Never overwrite an installed app or restore an old ledger to upgrade. An interrupted activation blocks new sessions until explicit recovery.

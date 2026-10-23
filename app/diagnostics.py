@@ -1,5 +1,16 @@
 """Credential-free explanations for local policy and API failures."""
 EXPLANATIONS = {
+ 'team_ssh_stop_unconfirmed': ('The dedicated forwarding child did not confirm shutdown within the bounded wait.', 'Shared request admission is stopped and the ledger is closed. Retry stopping the coordinator; never kill a system SSH service or delete accounting state.'),
+ 'controls_invalid': ('Optional request controls do not match their supported schema or current model policy.', 'Inspect controls show and the private draft. Apply only its exact reviewed digest; do not edit the active file.'),
+ 'controls_changed': ('Reviewed controls changed, disappeared, or were interrupted during application.', 'Restore the reviewed file or repeat the original controls apply command while stopped. Usage was not reset.'),
+ 'session_token_limit': ('This run cannot reserve its full next input and maximum output.', 'Inspect report. Review the run ceiling or intentionally begin different work; the daily ceiling remains in force.'),
+ 'session_request_limit': ('The reviewed run request ceiling was reached.', 'Inspect the run for repeated failures before authorizing more work.'),
+ 'repeated_request_error': ('The same request error repeated up to the reviewed threshold.', 'Inspect report, then acknowledge that exact run with session continue RUN_ID --reviewed. Existing holds and limits remain.'),
+ 'spending_limit': ('The reviewed USD ceiling cannot cover the next request.', 'Inspect report and the active daily/monthly upper-bound budget. No model or provider fallback is used.'),
+ 'pricing_expired': ('Reviewed upper-bound model pricing expired.', 'Verify current worst-case model and tier prices before applying an updated controls digest.'),
+ 'cost_above_reservation': ('Confirmed cost exceeded its reviewed reservation.', 'Inspect report and pricing. The confirmed amount remains recorded. Use controls resume --reviewed only after resolving unknown requests and correcting the cause.'),
+ 'storage_low': ('Private storage is below the reviewed free-space floor.', 'Free space deliberately. The harness does not delete project files, sessions, ledgers or unrelated Docker resources.'),
+ 'checkpoint_review_required': ('A project checkpoint or restore needs review.', 'Use checkpoint preview before restore; use checkpoint recover after an interruption. Keep editors quiet during restore. API accounting is never restored.'),
  'subscription_config_changed': ('The subscription config differs from its installation-time baseline, or that comparison is unavailable.', 'Review independent subscription edits if unexpected. This is informational, does not block API use, and does not prove the API harness changed the file. Do not overwrite subscription settings to clear the warning.'),
  'team_client_required': ('This installation owns the shared coordinator and cannot also run an independent personal ledger.', 'Use a separate client installation joined to that coordinator. Other organization callers must also be coordinated.'),
  'upgrade_recovery_required': ('A code activation was interrupted or the active generation changed.', 'Run codex-api upgrade recover for an interrupted activation. It preserves current usage; never delete the journal or restore an old ledger.'),

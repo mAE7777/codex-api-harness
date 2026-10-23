@@ -8,6 +8,7 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 FORBIDDEN_NAMES={'settings.json','verification.json','readiness.json','installation.json','gateway.token','auth.json','openai-key.env','search-keys.env','docker-login.env',
+                 'controls.json','controls-draft.json','controls-stop.json','active-run.json','checkpoint-pending.json',
                  'policy-draft.json','policy-pending.json','policy-render-pending.json','policy.json','team-policy.json','runtime-acceptance.json','protocol-acceptance.json','team-client.json','protected-paths.json','ledger-witness.json','upgrade-pending.json','last-key-rotation.json','authorized_keys','sshd_config'}
 PATTERNS={
     'host home path':rb'/(?:Users|home)/[A-Za-z0-9_.-]+/',
@@ -24,7 +25,7 @@ def check(paths,blobs=None):
     failures=[]
     for path in paths:
         relative=path.relative_to(ROOT)
-        if path.is_symlink() or path.name in FORBIDDEN_NAMES or path.name.startswith(('team-known-hosts','team-tunnel.key')) or path.suffix in {'.log','.env','.sqlite3','.pem','.p12','.pfx','.key','.sock'} or any(p in {'state','backups','vendor','__pycache__','team','guest-state','extensions','releases','upgrades'} for p in relative.parts):
+        if path.is_symlink() or path.name in FORBIDDEN_NAMES or path.name.startswith(('team-known-hosts','team-tunnel.key')) or path.suffix in {'.log','.env','.sqlite3','.pem','.p12','.pfx','.key','.sock'} or any(p in {'state','backups','vendor','__pycache__','team','guest-state','extensions','releases','upgrades','checkpoints'} for p in relative.parts):
             failures.append((str(relative),'runtime, private, binary or linked artifact'));continue
         data=blobs[str(relative)] if blobs is not None else path.read_bytes()
         if str(relative)=='kit/runtime-policy.json':

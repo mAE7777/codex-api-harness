@@ -82,6 +82,21 @@ class PreferenceTests(unittest.TestCase):
         self.assertEqual(json.loads((self.home/'preferences.json').read_text()),before)
         self.assertEqual(preferences.read_config(self.home/'config.toml')['model'],'gpt-5.6-terra')
 
+    def test_sandbox_maintenance_keeps_saved_preferences_byte_exact(self):
+        (self.home/'config.toml').write_text('model="gpt-5.6-terra"\n')
+        preferences.prepare(self.home,self.base)
+        original={p.name:p.read_bytes() for p in self.home.iterdir()}
+        _,policy=preferences.prepare(self.home,self.base,return_policy=True,persist=False)
+        self.assertEqual(policy['model_provider'],'quota_gateway')
+        self.assertFalse(policy['features']['image_generation'])
+        real_prepare=preferences.prepare
+        def prepare(home,**kwargs):return real_prepare(home,self.base,Path(self.temp.name)/'absent-extensions',**kwargs)
+        with patch.object(preferences,'api_home',return_value=self.home),patch.object(preferences,'prepare',side_effect=prepare),patch.object(preferences.subprocess,'Popen') as child,patch.object(preferences,'save') as save:
+            child.return_value.wait.return_value=0
+            self.assertEqual(preferences.run(['sandbox','-P','codex_api_workspace','--include-managed-config','--','true']),0)
+            save.assert_not_called()
+        self.assertEqual(original,{p.name:p.read_bytes() for p in self.home.iterdir()})
+
 
 class DailyFixture(unittest.TestCase):
     setUp=fixtures.GuardTests.setUp
